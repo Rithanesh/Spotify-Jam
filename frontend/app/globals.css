@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+/* ---- Theme tokens ----
+   Three modes toggle by swapping the [data-theme] attribute on <html>.
+   "custom" keeps the dark-mode neutrals but lets the accent hue be
+   picked freely (see ThemeProvider) — covers "customizable theme". */
+
+:root,
+[data-theme='dark'] {
+  --bg: #14151a;
+  --surface: #1d1f26;
+  --surface-raised: #262832;
+  --border: #33353f;
+  --text: #ededf2;
+  --text-muted: #8b8d98;
+  --accent: #7c5cff;
+  --accent-text: #ffffff;
+  --danger: #ff5c72;
+  --success: #4ade80;
+}
+
+[data-theme='light'] {
+  --bg: #f7f6f3;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #e3e1db;
+  --text: #1b1c22;
+  --text-muted: #6b6d78;
+  --accent: #6a46f5;
+  --accent-text: #ffffff;
+  --danger: #d9364f;
+  --success: #1f9d55;
+}
+
+[data-theme='custom'] {
+  /* base inherits dark-mode neutrals; --accent is overridden inline via
+     style attribute from ThemeProvider based on the user's chosen hex */
+  --bg: #14151a;
+  --surface: #1d1f26;
+  --surface-raised: #262832;
+  --border: #33353f;
+  --text: #ededf2;
+  --text-muted: #8b8d98;
+  --accent: #7c5cff;
+  --accent-text: #ffffff;
+  --danger: #ff5c72;
+  --success: #4ade80;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+h1, h2, h3, .heading {
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+a { color: var(--accent); }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 14px;
+}
+
+input, select {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+input:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

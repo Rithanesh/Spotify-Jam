@@ -1,0 +1,58 @@
+{
+  "name": "spotify-jam-app",
+  "version": "0.1.0",
+  "main": "electron/main.js",
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "setup:win": "scripts\\setup.bat",
+    "dev": "bash scripts/dev.sh",
+    "dev:win": "scripts\\dev.bat",
+    "electron-dev": "bash scripts/electron-dev.sh",
+    "electron-dev:win": "scripts\\electron-dev.bat",
+    "build": "bash scripts/build.sh",
+    "build:mac": "bash scripts/build-mac.sh",
+    "build:win": "bash scripts/build-win-from-mac.sh",
+    "build:win:native": "scripts\\build.bat",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && python run.py",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && bash build_backend.sh",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.8.0"
+  },
+  "build": {
+    "appId": "com.example.spotifyjamapp",
+    "productName": "Spotify Jam App",
+    "files": [
+      "electron/**/*",
+      "frontend/out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist/",
+        "to": "backend/"
+      },
+      {
+        "from": "frontend/out/",
+        "to": "frontend-out/"
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
