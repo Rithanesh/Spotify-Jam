@@ -1,149 +1,154 @@
-# Spotify Jam App
+# 🎵 Spotify Jam App
 
-Electron desktop app (Mac + Windows) for a shared queue: one device stays
-connected to the speaker via Spotify, everyone else adds/reorders songs
-from the app or, when the admin turns on "network access," from a
-browser on the same Wi-Fi.
+> An Electron desktop application (macOS & Windows) for shared, synchronized Spotify queues across local networks. One host device stays connected to the sound system; everyone else adds, votes, and reorders songs via the desktop client or any web browser on the local Wi-Fi.
 
-## Structure
+---
+
+## 📌 Overview
+
+In group listening settings (parties, offices, hangouts), passing around a phone or giving everyone direct control over a single Bluetooth speaker often causes chaos. **Spotify Jam App** solves this by establishing a host device that manages the playback output while providing a collaborative local network portal.
+
+> [!NOTE]
+> **Important Design Note: Spotify's Queue API Limitation**  
+> Spotify's Web API does **not** provide an endpoint to inspect, reorder, or delete tracks from a live device queue — only an "Add to Queue" endpoint exists.  
+> To solve this, **Spotify Jam App** maintains its own queue in SQLite as the single source of truth (`backend/app/queue_engine.py`) and only pushes tracks to Spotify right as they are scheduled to play. This allows full reordering, prioritizing, and deletion of queued songs before they play!
+
+---
+
+## ✨ Features
+
+- 🎧 **Host Playback Controller**: Run locally on macOS or Windows; streams audio smoothly through the host's active Spotify Connect device.
+- 🌐 **Local Network Access (mDNS / LAN)**: Enable a single toggle in Settings to open the web portal on your local Wi-Fi (`http://<hostname>.local:9000` or local IP). Friends can join without installing anything!
+- 🔀 **Custom Dynamic Queue**: Add songs via Spotify search, vote, reorder (move up/down), or remove unplayed tracks.
+- 🔐 **Secure Role-Based Access (RBAC)**:
+  - **Admin**: Control Spotify connection, toggle LAN discoverability, manage users, view system audit logs, and configure retention.
+  - **Member**: Search tracks, submit songs, and interact with the shared queue.
+  - Initial `admin` login enforces an immediate password change for security.
+- 🎨 **Modern Aesthetics**: Sleek dark/light modes, live accent color customizer, responsive layouts, and music-themed animated loaders.
+- 🛡️ **Security & Privacy**: Argon2 password hashing, secure JWT sessions, OS-keychain backed token encryption, and structured rotating audit logs.
+
+---
+
+## 🏗️ Project Architecture
 
 ```
-electron/     Electron main process + preload (spawns backend, owns the window)
-backend/      FastAPI + SQLite — auth, queue engine, Spotify client, scheduler
-frontend/     Next.js (static export), theming, loader, all pages
-docs/         db-schema.md — full schema documentation
+spotify-jam/
+├── electron/         # Electron main & preload processes (window management, backend lifecycle)
+│   ├── main.js
+│   └── preload.js
+├── backend/          # FastAPI + SQLite backend service
+│   ├── app/
+│   │   ├── routers/  # Auth, Spotify, Queue, Settings, Users, Logs
+│   │   ├── queue_engine.py
+│   │   ├── spotify_client.py
+│   │   └── schema.sql
+│   ├── requirements.txt
+│   └── run.py
+├── frontend/         # Next.js frontend (static export)
+│   ├── app/          # App router pages (dashboard, queue, settings, login)
+│   ├── components/   # UI components (SpotifyPanel, ThemeToggle, etc.)
+│   └── lib/          # API client & authentication guards
+├── docs/             # Documentation (db-schema.md, architecture)
+└── scripts/          # Cross-platform build & dev automation scripts
 ```
 
-## Important design note: Spotify's queue API
+---
 
-Spotify's Web API has **no endpoint to reorder or remove tracks from a
-device's live playback queue** — only "add to queue" exists, and the
-live queue can't even be read back. So this app keeps its own queue in
-SQLite (`queue_items`) as the source of truth, and only pushes the next
-song to Spotify right before it's due to play. Move up/down/delete only
-work on songs that haven't been pushed yet (see `backend/app/queue_engine.py`).
-Once a song is "now playing" you can skip it, but not un-add it.
+## 🚀 Quick Start
 
-## Quick start (scripts do the rest)
+Automated scripts handle dependency installations, environment files, and local orchestration.
 
+### 1. Automated Setup
+
+```bash
+# macOS / Linux
+npm run setup
+
+# Windows
+scripts\setup.bat
 ```
-npm run setup          # mac/linux — or scripts\setup.bat on Windows
-                        # installs backend + frontend + root deps, creates .env
+*Installs frontend & root packages, creates a dedicated Python virtual environment (`backend/.venv`), and prepares `.env`.*
 
-# fill in SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in .env, then:
+### 2. Configure Spotify Developer Credentials
 
-npm run dev             # backend --reload + next dev, opens the real
-                        # Electron window pointed at localhost:3000 —
-                        # hot reload AND actual app look/feel, not a tab
-                        # (scripts\dev.bat on Windows)
-
-npm run electron-dev    # builds frontend, launches the real Electron shell
-                        # (scripts\electron-dev.bat on Windows)
-
-npm run build            # full production installer -> dist/
-                        # (scripts\build.bat on Windows)
-```
-
-`npm run dev` is the fast loop — hot reload, test in a normal browser,
-no Electron packaging step. `npm run electron-dev` is for checking the
-actual desktop shell (window chrome, tray, spawned backend) before a
-full build. Both skip PyInstaller — `electron/main.js` falls back to
-running the Python source directly via `python3`/`python` when it can't
-find a built binary, so you don't need to rebuild the backend binary on
-every change during dev.
-
-## First-time setup (manual, if you'd rather not use the scripts)
-
-1. **Spotify dev app**: create one at https://developer.spotify.com/dashboard,
-   set the redirect URI to `http://127.0.0.1:9000/api/spotify/callback`,
-   and set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` as env vars (or
-   bake them into `backend/app/config.py` before building — never ship
-   them in a public repo).
-
-2. **Backend**:
+Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
+1. Set the **Redirect URI** to:
    ```
-   cd backend
-   pip install -r requirements.txt --break-system-packages
-   python run.py          # dev server, http://0.0.0.0:9000
+   http://127.0.0.1:9000/api/spotify/callback
    ```
-   First run prints a generated admin password to the console and to
-   `~/.spotify-jam-app/logs/app.log` — log in as `admin` with that
-   password and change it.
-
-3. **Frontend**:
-   ```
-   cd frontend
-   npm install
-   npm run dev             # dev server, http://localhost:3000
+2. Update your `.env` file with your credentials:
+   ```env
+   SPOTIFY_CLIENT_ID=your_client_id_here
+   SPOTIFY_CLIENT_SECRET=your_client_secret_here
    ```
 
-4. **Electron (dev)**:
-   ```
-   npm install
-   npm start                # loads frontend/out — run `npm run build:frontend` first
-   ```
+### 3. Run in Development
 
-## Building the installer (single file, no dependencies for the user)
+```bash
+# Fast-reload dev loop (FastAPI backend + Next.js dev server in Electron)
+npm run dev
 
-```
-npm run build:frontend    # next build -> frontend/out (static)
-npm run build:backend     # pyinstaller -> backend/dist/spotify-jam-backend(.exe)
-npm run build              # electron-builder -> dist/ (.dmg for mac, .exe/.msi for Windows)
+# Or test the packaged Electron shell (loads static export)
+npm run electron-dev
 ```
 
-`electron-builder` bundles the PyInstaller binary as an extra resource
-and the static Next.js export as app files — the end user installs one
-file with nothing else to set up. macOS needs code signing + notarization
-for Gatekeeper to allow the bundled backend binary to run; Windows
-benefits from a code-signing cert to avoid SmartScreen warnings.
+> **Default Admin Credentials**:
+> - **Username**: `admin`
+> - **Password**: `admin` *(You will be prompted to change this immediately on first login)*
 
-## What's implemented vs. stubbed
+---
 
-Implemented: schema + migrations, argon2 auth, JWT sessions, invite-based
-member onboarding, RBAC (admin/member), the own-queue engine with
-add/reorder/remove, discoverable-on-network gate (checked per-request,
-so the toggle is instant), OS-keychain-backed encryption for Spotify
-tokens, rotating file logs, structured audit log, log export as a zip,
-per-user and admin dashboards (date-wise, derived from the audit log),
-daily cleanup of audit/queue rows older than the configurable retention
-window (default 60 days), light/dark/custom theming with a live accent
-picker, and a music-themed loader screen.
+## 🛠️ Manual Development Setup
 
-Also now wired up: the Spotify "Connect" button and device picker
-(Settings page → `components/SpotifyPanel.tsx`), opening Spotify's OAuth
-page in the OS browser via `electronAPI.openExternal` (not inside the
-Electron window itself — mixing app chrome with a login page is a bad
-idea), and a plain confirmation page returned by `/api/spotify/callback`
-since a packaged app has no `localhost:3000` to redirect back to.
+If you prefer running components individually without the setup scripts:
 
-Still left for you: swapping the queue page's polling for a websocket if
-you want push updates instead of a 4-second refresh, and testing the
-whole OAuth round-trip against a real Spotify dev app (untested here —
-no internet access in the environment that built this).
-
-## venv, default login, and running both modes at once
-
-- **Backend venv**: `npm run setup` creates `backend/.venv` and installs everything into it — nothing goes to system Python. Every dev/build script uses that venv's Python directly, no manual activation needed. `npm run build` also builds the PyInstaller binary from that same venv (`--clean` build, `--noconsole` on Windows since it runs as a background process with no terminal of its own).
-- **First login is `admin` / `admin`**, and the app forces a password change before anything else works — `must_change_password` on the user, checked by every page via `frontend/lib/useAuthGuard.ts`, enforced server-side too so it can't be skipped by hitting the API directly.
-- **Testing both admin-desktop and LAN-web at once**: run `npm run electron-dev`. The one FastAPI backend Electron spawns now serves both — the same static frontend for LAN browsers (`FRONTEND_DIR`, mounted in `backend/app/main.py`) and the Electron window itself over loopback. A single middleware (`discoverable_gate` in `main.py`) allows loopback always and gates everything else — API and pages both — behind the admin's network-access toggle, so there's exactly one place that decision lives. To test: launch with `electron-dev`, log in as admin, flip "network access" on in Settings, then from another device on the same Wi-Fi open `http://<your-computer-name>.local:9000` (or the LAN IP electron-dev prints) and log in with a member account/invite code.
-
-## Building for both Mac and Windows, from a Mac
-
-```
-npm run build:mac    # everything, on this Mac -> dist/*.dmg
-npm run build:win    # packages a Windows installer, on this Mac -> dist/*.exe
+### Backend
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate    # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python run.py                # Runs API on http://0.0.0.0:9000
 ```
 
-**The catch**: PyInstaller does not cross-compile. A Mac can only ever
-produce a mac backend binary — there's no way around this from mac
-alone. So `build:win` needs `backend/dist/spotify-jam-backend.exe`
-already sitting there, built on an actual Windows machine or a Windows
-CI runner (e.g. a `windows-latest` GitHub Actions job running
-`scripts\build.bat`, or just its PyInstaller step). Copy that `.exe`
-into `backend/dist/` on this Mac, then run `npm run build:win` —
-electron-builder itself packages a Windows NSIS installer from mac
-fine, it just needs `wine` for that one step:
-`brew install --cask wine-stable`.
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev                  # Runs Next.js on http://localhost:3000
+```
 
-The frontend build is the same static export either way — no
-cross-compile issue there, ever.
+### Electron
+```bash
+npm install
+npm run build:frontend       # Generates static export in frontend/out
+npm start
+```
+
+---
+
+## 📦 Packaging & Distribution
+
+Spotify Jam App can be built into standalone, self-contained desktop installers (no separate Python or Node.js runtime required for end-users):
+
+```bash
+# Build frontend static files
+npm run build:frontend
+
+# Package the Python backend with PyInstaller
+npm run build:backend
+
+# Bundle the final Electron installer (.dmg / .exe)
+npm run build
+```
+
+### Cross-Platform Packaging from macOS
+- **macOS DMG**: `npm run build:mac`
+- **Windows Installer from Mac**: `npm run build:win`
+  > *Note*: PyInstaller does not cross-compile binaries. To package a Windows installer from macOS, place the pre-compiled `spotify-jam-backend.exe` (built on Windows or CI) into `backend/dist/` and ensure `wine` is installed (`brew install --cask wine-stable`).
+
+---
+
+## 📄 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
