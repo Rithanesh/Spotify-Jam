@@ -1,6 +1,8 @@
 {
   "name": "spotify-jam-app",
   "version": "0.1.0",
+  "description": "Collaborative Spotify queue management desktop application",
+  "author": "Rithanesh",
   "main": "electron/main.js",
   "scripts": {
     "setup": "bash scripts/setup.sh",

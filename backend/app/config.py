@@ -5,14 +5,21 @@ per-user app data folder — never inside the installed app bundle, which
 is read-only after code signing on both mac and Windows.
 """
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Looks for .env at the repo root (two levels up from this file in dev;
-# in a packaged build there's no .env — real values come from Electron's
-# env when it spawns the backend, see electron/main.js).
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+# In dev, .env sits at the repo root (two levels up from this file).
+# In a PyInstaller frozen build, __file__ is inside _MEIPASS so that
+# path doesn't exist — try the process CWD (set by Electron) as a
+# secondary location, and silently skip if neither exists.
+_dev_env = Path(__file__).resolve().parents[2] / ".env"
+_cwd_env = Path.cwd() / ".env"
+if _dev_env.is_file():
+    load_dotenv(_dev_env)
+elif _cwd_env.is_file():
+    load_dotenv(_cwd_env)
 
 APP_DATA_DIR = Path(os.environ.get("APP_DATA_DIR", Path.home() / ".spotify-jam-app"))
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@
 .env*.local
 *.env
 !.env.example
+.agents
 
 # Dependencies
 node_modules/

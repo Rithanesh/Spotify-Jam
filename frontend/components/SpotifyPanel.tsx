@@ -122,10 +122,38 @@ export default function SpotifyPanel() {
       if (!res?.auth_url) {
         throw new Error('Server did not return a valid Spotify authorization URL');
       }
-      await openExternalUrl(res.auth_url);
+
+      // In Electron, open the Spotify OAuth in a dedicated in-app window so
+      // the callback to http://127.0.0.1:9000 works (Safari HTTPS-Only blocks it).
+      if ((window as any).electronAPI?.spotifyAuth) {
+        (window as any).electronAPI.spotifyAuth(res.auth_url);
+      } else {
+        // LAN browser clients — open in a new tab as before
+        window.open(res.auth_url, '_blank');
+      }
+
+      // Poll for connection status so the UI updates automatically
+      // once the user completes the OAuth flow in the auth window.
+      let pollCount = 0;
+      const maxPolls = 120; // 2 minutes
+      const pollInterval = setInterval(async () => {
+        pollCount++;
+        try {
+          const status = await apiFetch('/api/spotify/status');
+          if (status?.connected) {
+            clearInterval(pollInterval);
+            setConnectedUser(status.spotify_user_id || 'Connected');
+            loadDevices();
+            setConnecting(false);
+          }
+        } catch { /* ignore */ }
+        if (pollCount >= maxPolls) {
+          clearInterval(pollInterval);
+          setConnecting(false);
+        }
+      }, 1000);
     } catch (err: any) {
       setError(err.message || 'Failed to start Spotify authentication');
-    } finally {
       setConnecting(false);
     }
   }

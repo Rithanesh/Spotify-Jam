@@ -1,32 +1,52 @@
 import json
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import DB_PATH
 
-SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
+def _resolve_data_path(relative: str) -> Path:
+    """Resolve a bundled data file path that works both in development and
+    inside a PyInstaller --onefile build.  In a frozen build, data files
+    specified via --add-data are extracted to sys._MEIPASS; in dev they
+    sit next to the source files."""
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent
+    return base / relative
+
+
+SCHEMA_FILE = _resolve_data_path("app" if getattr(sys, "frozen", False) else "") / "schema.sql"
+
+
+import threading
+
+_local = threading.local()
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
-
-# One shared connection is fine for SQLite at this scale (single desktop
-# app, low concurrency); FastAPI still awaits handlers, DB calls are quick.
-_conn = _connect()
+def _get_connection() -> sqlite3.Connection:
+    if not hasattr(_local, "conn") or _local.conn is None:
+        _local.conn = _connect()
+    return _local.conn
 
 
 def init_db() -> None:
+    conn = _get_connection()
     with open(SCHEMA_FILE, "r") as f:
-        _conn.executescript(f.read())
-    _conn.commit()
+        conn.executescript(f.read())
+    conn.commit()
     _run_light_migrations()
 
 
@@ -34,37 +54,39 @@ def _run_light_migrations() -> None:
     """CREATE TABLE IF NOT EXISTS won't add a column to a table that
     already existed from an earlier run — cover that here instead of
     asking anyone testing this early to delete their DB by hand."""
-    cols = {row["name"] for row in _conn.execute("PRAGMA table_info(users)").fetchall()}
+    conn = _get_connection()
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "must_change_password" not in cols:
-        _conn.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0")
-        _conn.commit()
+        conn.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0")
+        conn.commit()
 
     if "last_seen_at" not in cols:
-        _conn.execute("ALTER TABLE users ADD COLUMN last_seen_at TEXT")
-        _conn.commit()
+        conn.execute("ALTER TABLE users ADD COLUMN last_seen_at TEXT")
+        conn.commit()
 
-    _conn.execute(
+    conn.execute(
         """
         INSERT OR IGNORE INTO app_settings (key, value, updated_at)
         VALUES ('shareable_url', 'http://app.spotify.com:9000', datetime('now'))
         """
     )
-    _conn.commit()
+    conn.commit()
 
     legacy_admin_hash = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
-    row = _conn.execute("SELECT id FROM users WHERE password_hash = ?", (legacy_admin_hash,)).fetchone()
+    row = conn.execute("SELECT id FROM users WHERE password_hash = ?", (legacy_admin_hash,)).fetchone()
     if row:
         from .security import hash_password
-        _conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password("admin"), row["id"]))
-        _conn.commit()
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password("admin"), row["id"]))
+        conn.commit()
 
 
 @contextmanager
 def get_db():
+    conn = _get_connection()
     try:
-        yield _conn
+        yield conn
     finally:
-        pass  # shared connection — nothing to close per-request
+        pass
 
 
 def now() -> str:
