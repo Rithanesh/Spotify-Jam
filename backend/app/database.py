@@ -51,32 +51,40 @@ def init_db() -> None:
 
 
 def _run_light_migrations() -> None:
-    """CREATE TABLE IF NOT EXISTS won't add a column to a table that
-    already existed from an earlier run — cover that here instead of
-    asking anyone testing this early to delete their DB by hand."""
+    """Run sequential migrations tracked by app_version table to safely
+    update existing databases on app upgrade without erasing data."""
     conn = _get_connection()
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-    if "must_change_password" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0")
+    conn.execute("CREATE TABLE IF NOT EXISTS app_version (version INTEGER PRIMARY KEY)")
+    row = conn.execute("SELECT MAX(version) as v FROM app_version").fetchone()
+    current_version = row["v"] if row and row["v"] is not None else 0
+
+    if current_version < 1:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "must_change_password" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0")
+        if "last_seen_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_seen_at TEXT")
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+            VALUES ('shareable_url', 'http://app.spotify.com:9000', datetime('now'))
+            """
+        )
+        legacy_admin_hash = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
+        admin_row = conn.execute("SELECT id FROM users WHERE password_hash = ?", (legacy_admin_hash,)).fetchone()
+        if admin_row:
+            from .security import hash_password
+            conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password("admin"), admin_row["id"]))
+        
+        conn.execute("INSERT INTO app_version (version) VALUES (1)")
         conn.commit()
 
-    if "last_seen_at" not in cols:
-        conn.execute("ALTER TABLE users ADD COLUMN last_seen_at TEXT")
-        conn.commit()
-
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO app_settings (key, value, updated_at)
-        VALUES ('shareable_url', 'http://app.spotify.com:9000', datetime('now'))
-        """
-    )
-    conn.commit()
-
-    legacy_admin_hash = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
-    row = conn.execute("SELECT id FROM users WHERE password_hash = ?", (legacy_admin_hash,)).fetchone()
-    if row:
-        from .security import hash_password
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password("admin"), row["id"]))
+    if current_version < 2:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(queue_items)").fetchall()}
+        if "album_art_url" not in cols:
+            conn.execute("ALTER TABLE queue_items ADD COLUMN album_art_url TEXT")
+        conn.execute("INSERT INTO app_version (version) VALUES (2)")
         conn.commit()
 
 

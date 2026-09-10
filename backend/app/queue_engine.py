@@ -9,6 +9,8 @@ import httpx
 from . import spotify_client
 from .database import get_db, now, write_audit_log
 
+AUTO_PUSH_ENABLED = False
+
 
 async def push_next_if_needed():
     """Call on a timer (see scheduler.py). If nothing pushed/playing right
@@ -44,6 +46,13 @@ async def push_next_if_needed():
                     return  # still queued in Spotify, wait
                 else:
                     # Not playing and no longer in Spotify queue (was cleared or played)
+                    import datetime
+                    from .database import now
+                    # Add a 15-second grace period after pushing before assuming it was skipped
+                    pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00')) if active.get("pushed_at") else datetime.datetime.now(datetime.timezone.utc)
+                    if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
+                        return # Spotify might just be slow to update, wait
+                    
                     with get_db() as conn:
                         conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
                         conn.commit()
@@ -51,6 +60,9 @@ async def push_next_if_needed():
             import logging
             logging.getLogger("spotify-jam-app.queue").debug(f"Queue sync check error: {e}")
             return  # temporary network error, don't push duplicates yet
+
+    if not AUTO_PUSH_ENABLED:
+        return
 
     with get_db() as conn:
         target_device = conn.execute(
@@ -110,7 +122,7 @@ async def push_item_now(item_id: int) -> dict:
 def add_song(user_id: int, track: dict) -> int:
     with get_db() as conn:
         max_pos = conn.execute(
-            "SELECT COALESCE(MAX(position), 0) AS m FROM queue_items WHERE status = 'pending'"
+            "SELECT COALESCE(MAX(position), 0) AS m FROM queue_items"
         ).fetchone()["m"]
         cur = conn.execute(
             """INSERT INTO queue_items
@@ -125,11 +137,13 @@ def add_song(user_id: int, track: dict) -> int:
     return item_id
 
 
-def remove_song(user_id: int, item_id: int) -> None:
+def remove_song(user_id: int, user_role: str, item_id: int) -> None:
     with get_db() as conn:
         item = conn.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,)).fetchone()
         if item is None:
             raise ValueError("Song not found")
+        if user_role != "admin" and item["added_by"] != user_id:
+            raise ValueError("You can only remove your own songs")
         conn.execute("UPDATE queue_items SET status = 'removed' WHERE id = ?", (item_id,))
         write_audit_log(conn, user_id, "song_removed", "queue_item", item_id, {"track_name": item["track_name"]})
         conn.commit()

@@ -319,7 +319,7 @@ export default function UserManagement() {
                 {resettingId === u.id ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <input
-                      placeholder="Temp pass (default 12345678)"
+                      placeholder="Leave blank for random"
                       value={customPassword}
                       onChange={(e) => setCustomPassword(e.target.value)}
                       style={{ fontSize: 12, padding: '4px 8px', width: 160 }}

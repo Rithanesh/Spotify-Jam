@@ -88,7 +88,11 @@ def reset_user_password(user_id: int, body: ResetPasswordRequest, admin: dict = 
     Admin can reset the password for any user so they can log back in
     or enter a new password if they forget it.
     """
-    temp_pass = body.new_password.strip() if body.new_password else "12345678"
+    if body.new_password and body.new_password.strip():
+        temp_pass = body.new_password.strip()
+    else:
+        temp_pass = secrets.token_urlsafe(6)
+
     if len(temp_pass) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
 

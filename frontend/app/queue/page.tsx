@@ -17,6 +17,7 @@ interface QueueItem {
   added_by_username?: string;
   added_by_display_name?: string;
   added_at?: string;
+  album_art_url?: string | null;
 }
 
 interface SearchResult {
@@ -49,14 +50,21 @@ export default function QueuePage() {
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  const [liveQueue, setLiveQueue] = useState<SearchResult[]>([]);
+  const [autoPush, setAutoPush] = useState<boolean>(false);
+
   async function loadQueue() {
     try {
-      const [q, np] = await Promise.all([
-        apiFetch(`/api/queue${showAllHistory ? '?all=true' : ''}`),
+      const [q, np, sq, ap] = await Promise.all([
+        apiFetch(`/api/queue${user?.role === 'admin' ? '?all=true' : ''}`),
         apiFetch('/api/queue/now-playing').catch(() => null),
+        apiFetch('/api/queue/spotify-live').catch(() => ({ queue: [] })),
+        apiFetch('/api/queue/auto-push').catch(() => ({ enabled: false })),
       ]);
       setQueue(q);
       setNowPlaying(np);
+      setLiveQueue(sq?.queue || []);
+      setAutoPush(ap?.enabled || false);
     } catch (err: any) {
       setError(err.message);
     }
@@ -72,6 +80,18 @@ export default function QueuePage() {
     }
   }
 
+  async function toggleAutoPush() {
+    try {
+      const res = await apiFetch('/api/queue/auto-push', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: !autoPush })
+      });
+      setAutoPush(res.enabled);
+    } catch (err: any) {
+      setError(err.message || 'Failed to toggle auto push');
+    }
+  }
+
   useEffect(() => {
     if (!user) return;
     loadQueue();
@@ -84,15 +104,24 @@ export default function QueuePage() {
     }
 
     return () => clearInterval(interval);
-  }, [user, showAllHistory]);
+  }, [user]);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (query.trim()) {
+        executeSearch(query);
+      } else {
+        setResults([]);
+      }
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [query]);
+
+  async function executeSearch(q: string) {
     setError('');
     setSearching(true);
     try {
-      const r = await apiFetch(`/api/queue/search?q=${encodeURIComponent(query)}`);
+      const r = await apiFetch(`/api/queue/search?q=${encodeURIComponent(q)}`);
       setResults(r || []);
       if (r && r.length === 0) {
         setError('No songs found matching your search.');
@@ -102,6 +131,10 @@ export default function QueuePage() {
     } finally {
       setSearching(false);
     }
+  }
+
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
   }
 
   async function addSong(track: SearchResult) {
@@ -121,11 +154,39 @@ export default function QueuePage() {
   }
 
   async function removeSong(id: number) {
+    if (queue) {
+      setQueue(queue.map(q => q.id === id ? { ...q, status: 'removed' } : q));
+    }
     await apiFetch(`/api/queue/${id}`, { method: 'DELETE' });
     loadQueue();
   }
 
   async function move(item: QueueItem, direction: -1 | 1) {
+    if (queue) {
+      const idx = queue.findIndex(q => q.id === item.id);
+      const pendingItems = queue.filter(q => q.status === 'pending');
+      const pendingIdx = pendingItems.findIndex(q => q.id === item.id);
+      
+      if (pendingIdx !== -1) {
+        const swapTarget = pendingItems[pendingIdx + direction];
+        if (swapTarget) {
+          const swapIdx = queue.findIndex(q => q.id === swapTarget.id);
+          if (idx !== -1 && swapIdx !== -1) {
+            const newQueue = [...queue];
+            newQueue[idx] = queue[swapIdx];
+            newQueue[swapIdx] = queue[idx];
+            
+            // Swap positions optimistically too
+            const tempPos = newQueue[idx].position;
+            newQueue[idx].position = newQueue[swapIdx].position;
+            newQueue[swapIdx].position = tempPos;
+            
+            setQueue(newQueue);
+          }
+        }
+      }
+    }
+
     await apiFetch(`/api/queue/${item.id}/position`, {
       method: 'PATCH',
       body: JSON.stringify({ new_position: item.position + direction }),
@@ -134,20 +195,28 @@ export default function QueuePage() {
   }
 
   async function pushNow(id: number) {
+    if (queue) {
+      setQueue(queue.map(q => q.id === id ? { ...q, status: 'pushed' } : q));
+    }
     try {
       await apiFetch(`/api/queue/${id}/push`, { method: 'POST' });
       loadQueue();
     } catch (err: any) {
       setError(err.message || 'Failed to push song to Spotify');
+      loadQueue(); // revert optimistic update
     }
   }
 
   if (!user || queue === null) return <Loader label="Loading the queue…" />;
 
+  const displayedQueue = (user.role === 'admin' && !showAllHistory)
+    ? queue.filter(q => ['pending', 'pushed', 'playing'].includes(q.status))
+    : queue;
+
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       <Navbar user={user} />
-      <div style={{ maxWidth: 640, margin: '0 auto', padding: '32px 20px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', maxWidth: 1000, width: '100%', margin: '0 auto', padding: '32px 20px', minHeight: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>
             Up next
@@ -421,9 +490,18 @@ export default function QueuePage() {
                   padding: '8px 4px',
                 }}
               >
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
-                  <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {r.album_art_url && (
+                    <img 
+                      src={r.album_art_url} 
+                      alt={r.name}
+                      style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
+                    />
+                  )}
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+                  </div>
                 </div>
                 <button className="btn-ghost" onClick={() => addSong(r)}>
                   Add
@@ -435,9 +513,15 @@ export default function QueuePage() {
 
         {user?.role === 'admin' && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>
-              Queue View (Admin):
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>
+                Queue View (Admin):
+              </span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
+                <input type="checkbox" checked={autoPush} onChange={toggleAutoPush} />
+                Auto-Push to Spotify
+              </label>
+            </div>
             <div style={{ display: 'flex', gap: 6 }}>
               <button
                 type="button"
@@ -445,7 +529,7 @@ export default function QueuePage() {
                 onClick={() => setShowAllHistory(false)}
                 style={{ padding: '4px 12px', fontSize: 12, borderRadius: 6 }}
               >
-                Active Queue ({queue.filter(q => ['pending', 'pushed', 'playing'].includes(q.status)).length})
+                Active Queue ({queue.filter(q => q.status === 'pending' || q.status === 'playing' || q.status === 'pushed').length})
               </button>
               <button
                 type="button"
@@ -459,98 +543,178 @@ export default function QueuePage() {
           </div>
         )}
 
-        <div className="card" style={{ padding: 8 }}>
-          {queue.length === 0 && (
-            <p style={{ padding: 20, color: 'var(--text-muted)', textAlign: 'center' }}>
-              Nothing queued yet — search above to add the first song.
-            </p>
-          )}
-          {queue.map((item, idx) => (
-            <div
-              key={item.id}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '10px 12px',
-                borderBottom: idx < queue.length - 1 ? '1px solid var(--border)' : 'none',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
-                <span
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20, flex: 1, minHeight: 0 }}>
+          {/* Live Spotify Queue */}
+          <div className="card" style={{ padding: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', padding: '12px 12px 12px', flexShrink: 0 }}>
+              Up Next on Spotify
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, paddingRight: 4 }}>
+              {liveQueue.length === 0 ? (
+              <p style={{ padding: 20, color: 'var(--text-muted)', textAlign: 'center', fontSize: 13 }}>
+                No active Spotify queue.
+              </p>
+            ) : (
+              liveQueue.map((item: any, idx) => (
+                <div
+                  key={`live-${idx}`}
                   style={{
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: item.status === 'playing' ? 'var(--accent)' : 'var(--text-muted)',
-                    background: item.status === 'playing' ? 'rgba(124, 92, 255, 0.15)' : 'var(--surface-light, rgba(255,255,255,0.06))',
-                    borderRadius: 6,
-                    padding: '4px 8px',
-                    minWidth: 32,
-                    textAlign: 'center',
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '10px 12px',
+                    borderBottom: idx < liveQueue.length - 1 ? '1px solid var(--border)' : 'none',
                   }}
-                  title={`Queue Position #${idx + 1}`}
                 >
-                  #{idx + 1}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span>{item.track_name}</span>
-                    {item.status === 'playing' && (
-                      <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, padding: '2px 6px', background: 'rgba(124, 92, 255, 0.15)', borderRadius: 4 }}>
-                        ▶ NOW PLAYING
-                      </span>
-                    )}
-                    {item.status === 'pending' && (
-                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 700, padding: '2px 6px', background: 'rgba(245, 158, 11, 0.15)', borderRadius: 4 }}>
-                        ⏳ NOT PUSHED (#{idx + 1})
-                      </span>
-                    )}
-                    {item.status === 'pushed' && (
-                      <span style={{ fontSize: 11, color: 'var(--success, #22c3a6)', fontWeight: 700, padding: '2px 6px', background: 'rgba(34, 195, 166, 0.15)', borderRadius: 4 }}>
-                        ✓ PUSHED (#{idx + 1})
-                      </span>
-                    )}
-                  {['played', 'removed', 'skipped'].includes(item.status) && (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, padding: '2px 6px', background: 'rgba(255, 255, 255, 0.06)', borderRadius: 4, textTransform: 'uppercase' }}>
-                      {item.status}
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{item.artist_name}</span>
-                  {item.added_by_username && (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.8 }}>
-                      • added by <strong style={{ color: 'var(--text)' }}>@{item.added_by_username}</strong>
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {item.status === 'pending' && (
-                  <>
-                    <button
-                      className="btn-primary"
-                      onClick={() => pushNow(item.id)}
-                      style={{ padding: '3px 8px', fontSize: 11, borderRadius: 4, whiteSpace: 'nowrap' }}
-                      title="Push this song to Spotify's queue right now"
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: 'var(--text-muted)',
+                        background: 'var(--surface-light, rgba(255,255,255,0.06))',
+                        borderRadius: 6,
+                        padding: '4px 8px',
+                        minWidth: 32,
+                        textAlign: 'center',
+                      }}
                     >
-                      ▶ Push to Spotify
-                    </button>
-                    <button className="btn-ghost" onClick={() => move(item, -1)} aria-label="Move up" title="Move up">
-                      ↑
-                    </button>
-                    <button className="btn-ghost" onClick={() => move(item, 1)} aria-label="Move down" title="Move down">
-                      ↓
-                    </button>
-                  </>
-                )}
-                <button className="btn-ghost" onClick={() => removeSong(item.id)} aria-label="Remove" title="Remove song">
-                  ✕
-                </button>
-              </div>
+                      ~
+                    </span>
+                    {item.album_art_url && (
+                      <img 
+                        src={item.album_art_url} 
+                        alt={item.track_name || item.name}
+                        style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
+                      />
+                    )}
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                      <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {item.track_name || item.name}
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {item.artist_name || item.artist}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
             </div>
-          ))}
+          </div>
+
+          {/* Pending Local Queue */}
+          <div className="card" style={{ padding: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', padding: '12px 12px 12px', flexShrink: 0 }}>
+              Pending Local Queue
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, paddingRight: 4 }}>
+              {displayedQueue.length === 0 ? (
+              <p style={{ padding: 20, color: 'var(--text-muted)', textAlign: 'center', fontSize: 13 }}>
+                Nothing queued yet — search above to add the first song.
+              </p>
+            ) : (
+              displayedQueue.map((item, idx) => (
+                <div
+                  key={item.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    padding: '10px 12px',
+                    borderBottom: idx < displayedQueue.length - 1 ? '1px solid var(--border)' : 'none',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: '220px' }}>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: item.status === 'playing' ? 'var(--accent)' : 'var(--text-muted)',
+                        background: item.status === 'playing' ? 'rgba(124, 92, 255, 0.15)' : 'var(--surface-light, rgba(255,255,255,0.06))',
+                        borderRadius: 6,
+                        padding: '4px 8px',
+                        minWidth: 32,
+                        textAlign: 'center',
+                      }}
+                      title={`Queue Position #${queue.findIndex(q => q.id === item.id) + 1}`}
+                    >
+                      #{queue.findIndex(q => q.id === item.id) + 1}
+                    </span>
+                    {item.album_art_url && (
+                      <img 
+                        src={item.album_art_url} 
+                        alt={item.track_name}
+                        style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
+                      />
+                    )}
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {item.track_name}
+                        </div>
+                        {item.status === 'playing' && (
+                          <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--accent)', fontWeight: 700, padding: '2px 6px', background: 'rgba(124, 92, 255, 0.15)', borderRadius: 4 }}>
+                            ▶ NOW PLAYING
+                          </span>
+                        )}
+                        {item.status === 'pending' && (
+                          <span style={{ flexShrink: 0, fontSize: 11, color: '#f59e0b', fontWeight: 700, padding: '2px 6px', background: 'rgba(245, 158, 11, 0.15)', borderRadius: 4 }}>
+                            ⏳ NOT PUSHED
+                          </span>
+                        )}
+                        {item.status === 'pushed' && (
+                          <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--success, #22c3a6)', fontWeight: 700, padding: '2px 6px', background: 'rgba(34, 195, 166, 0.15)', borderRadius: 4 }}>
+                            ✓ PUSHED
+                          </span>
+                        )}
+                      {['played', 'removed', 'skipped'].includes(item.status) && (
+                        <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, padding: '2px 6px', background: 'rgba(255, 255, 255, 0.06)', borderRadius: 4, textTransform: 'uppercase' }}>
+                          {item.status}
+                        </span>
+                      )}
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.artist_name}</span>
+                        {item.added_by_username && (
+                          <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)', opacity: 0.8 }}>
+                            • added by <strong style={{ color: 'var(--text)' }}>@{item.added_by_username}</strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                    {item.status === 'pending' && (user.role === 'admin' || user.username === item.added_by_username) && (
+                      <>
+                        <button
+                          className="btn-primary"
+                          onClick={() => pushNow(item.id)}
+                          style={{ padding: '3px 8px', fontSize: 11, borderRadius: 4, whiteSpace: 'nowrap' }}
+                          title="Push this song to Spotify's queue right now"
+                        >
+                          ▶ Push
+                        </button>
+                        <button className="btn-ghost" onClick={() => move(item, -1)} aria-label="Move up" title="Move up">
+                          ↑
+                        </button>
+                        <button className="btn-ghost" onClick={() => move(item, 1)} aria-label="Move down" title="Move down">
+                          ↓
+                        </button>
+                      </>
+                    )}
+                    {(user.role === 'admin' || user.username === item.added_by_username) && (
+                      <button className="btn-ghost" onClick={() => removeSong(item.id)} aria-label="Remove" title="Remove song">
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
