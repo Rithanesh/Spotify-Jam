@@ -9,6 +9,7 @@ import { useAuthGuard } from '../../lib/useAuthGuard';
 
 interface QueueItem {
   id: number;
+  track_uri: string;
   track_name: string;
   artist_name: string;
   status: string;
@@ -209,9 +210,22 @@ export default function QueuePage() {
 
   if (!user || queue === null) return <Loader label="Loading the queue…" />;
 
-  const displayedQueue = (user.role === 'admin' && !showAllHistory)
+  const baseQueue = (user.role === 'admin' && !showAllHistory)
     ? queue.filter(q => ['pending', 'pushed', 'playing'].includes(q.status))
     : queue;
+
+  const displayedQueue = baseQueue.map(q => {
+    if (q.status === 'pushed' && nowPlaying && nowPlaying.uri === q.track_uri) {
+      return { ...q, status: 'playing' };
+    }
+    return q;
+  }).sort((a, b) => {
+    if (a.status === 'playing' && b.status !== 'playing') return -1;
+    if (b.status === 'playing' && a.status !== 'playing') return 1;
+    return 0;
+  });
+
+  const pendingQueue = queue.filter(q => q.status === 'pending');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -696,10 +710,24 @@ export default function QueuePage() {
                         >
                           ▶ Push
                         </button>
-                        <button className="btn-ghost" onClick={() => move(item, -1)} aria-label="Move up" title="Move up">
+                        <button 
+                          className="btn-ghost" 
+                          onClick={() => move(item, -1)} 
+                          aria-label="Move up" 
+                          title="Move up"
+                          disabled={pendingQueue[0]?.id === item.id}
+                          style={{ opacity: pendingQueue[0]?.id === item.id ? 0.3 : 1, cursor: pendingQueue[0]?.id === item.id ? 'not-allowed' : 'pointer' }}
+                        >
                           ↑
                         </button>
-                        <button className="btn-ghost" onClick={() => move(item, 1)} aria-label="Move down" title="Move down">
+                        <button 
+                          className="btn-ghost" 
+                          onClick={() => move(item, 1)} 
+                          aria-label="Move down" 
+                          title="Move down"
+                          disabled={pendingQueue[pendingQueue.length - 1]?.id === item.id}
+                          style={{ opacity: pendingQueue[pendingQueue.length - 1]?.id === item.id ? 0.3 : 1, cursor: pendingQueue[pendingQueue.length - 1]?.id === item.id ? 'not-allowed' : 'pointer' }}
+                        >
                           ↓
                         </button>
                       </>
