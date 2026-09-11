@@ -49,9 +49,10 @@ async def push_next_if_needed():
                     import datetime
                     from .database import now
                     # Add a 15-second grace period after pushing before assuming it was skipped
-                    pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00')) if active.get("pushed_at") else datetime.datetime.now(datetime.timezone.utc)
-                    if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
-                        return # Spotify might just be slow to update, wait
+                    if active["pushed_at"]:
+                        pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00'))
+                        if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
+                            return # Spotify might just be slow to update, wait
                     
                     with get_db() as conn:
                         conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
