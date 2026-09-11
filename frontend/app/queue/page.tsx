@@ -447,83 +447,96 @@ export default function QueuePage() {
           </div>
         )}
 
-        <form onSubmit={handleSearch} style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <input
-            placeholder="Search a song or artist"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button className="btn-primary" type="submit" disabled={searching}>
-            {searching ? 'Searching…' : 'Search'}
-          </button>
-        </form>
+        <div style={{ position: 'relative', marginBottom: 16, zIndex: 50 }}>
+          <form onSubmit={handleSearch} style={{ display: 'flex', gap: 8 }}>
+            <input
+              placeholder="Search a song or artist"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button className="btn-primary" type="submit" disabled={searching}>
+              {searching ? 'Searching…' : 'Search'}
+            </button>
+          </form>
 
-        {error && (
-          <div
-            style={{
-              background: 'rgba(255, 92, 114, 0.12)',
-              border: '1px solid var(--danger)',
-              borderRadius: 8,
-              padding: '10px 14px',
-              marginBottom: 16,
-              color: 'var(--danger)',
-              fontSize: 13,
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-            }}
-          >
-            <span>{error}</span>
-            {user.role === 'admin' && error.includes('Settings') && (
-              <Link
-                href="/settings/"
-                style={{
-                  color: 'var(--accent)',
-                  fontWeight: 600,
-                  fontSize: 13,
-                  marginLeft: 12,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                Go to Settings →
-              </Link>
-            )}
-          </div>
-        )}
+          {error && (
+            <div
+              style={{
+                background: 'rgba(255, 92, 114, 0.12)',
+                border: '1px solid var(--danger)',
+                borderRadius: 8,
+                padding: '10px 14px',
+                marginTop: 8,
+                color: 'var(--danger)',
+                fontSize: 13,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span>{error}</span>
+              {user.role === 'admin' && error.includes('Settings') && (
+                <Link
+                  href="/settings/"
+                  style={{
+                    color: 'var(--accent)',
+                    fontWeight: 600,
+                    fontSize: 13,
+                    marginLeft: 12,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Go to Settings →
+                </Link>
+              )}
+            </div>
+          )}
 
-        {results.length > 0 && (
-          <div className="card" style={{ padding: 12, marginBottom: 20 }}>
-            {results.map((r) => (
-              <div
-                key={r.uri}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '8px 4px',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  {r.album_art_url && (
-                    <img 
-                      src={r.album_art_url} 
-                      alt={r.name}
-                      style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
-                    />
-                  )}
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
-                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+          {results.length > 0 && (
+            <div className="card" style={{ 
+              position: 'absolute', 
+              top: '100%', 
+              left: 0, 
+              right: 0, 
+              marginTop: 8, 
+              padding: 12, 
+              maxHeight: 400, 
+              overflowY: 'auto', 
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+              zIndex: 100
+            }}>
+              {results.map((r) => (
+                <div
+                  key={r.uri}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 4px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {r.album_art_url && (
+                      <img 
+                        src={r.album_art_url} 
+                        alt={r.name}
+                        style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
+                      />
+                    )}
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+                    </div>
                   </div>
+                  <button className="btn-ghost" onClick={() => addSong(r)}>
+                    Add
+                  </button>
                 </div>
-                <button className="btn-ghost" onClick={() => addSong(r)}>
-                  Add
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
 
         {user?.role === 'admin' && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
