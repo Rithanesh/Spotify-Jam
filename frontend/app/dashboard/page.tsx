@@ -6,6 +6,11 @@ import Loader from '../../components/Loader';
 import Navbar from '../../components/Navbar';
 import { useAuthGuard } from '../../lib/useAuthGuard';
 
+const getTodayStr = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
 interface DashboardStats {
   top_users: { username: string; count: number }[];
   repeated: {
@@ -23,7 +28,9 @@ export default function DashboardPage() {
   const [dashStats, setDashStats] = useState<DashboardStats | null>(null);
   
   const [expandedUsers, setExpandedUsers] = useState<Record<string, boolean>>({});
+  const [expandedMyDates, setExpandedMyDates] = useState<Record<string, boolean>>({});
   const [repeatTime, setRepeatTime] = useState<'day' | 'week' | 'month'>('week');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayStr());
 
   useEffect(() => {
     if (!me) return;
@@ -51,12 +58,20 @@ export default function DashboardPage() {
     setExpandedUsers(prev => ({ ...prev, [username]: !prev[username] }));
   };
 
+  const toggleMyDate = (day: string) => {
+    setExpandedMyDates(prev => ({ ...prev, [day]: !prev[day] }));
+  };
+
   if (!me || myStats === null) return <Loader label="Crunching the numbers…" />;
 
   const totalMine = myStats.reduce((sum, r) => sum + r.count, 0);
 
   // max count for histogram
   const maxUserCount = dashStats?.top_users.length ? Math.max(...dashStats.top_users.map(u => u.count)) : 1;
+
+  const availableDates = myStats.map(r => r.day);
+  const showDateFilter = availableDates.length > 1;
+  const filteredStats = selectedDate === 'All' ? myStats : myStats.filter(r => r.day === selectedDate);
 
   return (
     <div>
@@ -65,30 +80,112 @@ export default function DashboardPage() {
         <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>My Dashboard</h1>
 
         <div className="card" style={{ padding: 20 }}>
-          <h3 style={{ margin: '0 0 4px' }}>Your requests</h3>
-          <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 14 }}>
-            {totalMine} song{totalMine === 1 ? '' : 's'} added in total.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h3 style={{ margin: '0 0 4px' }}>Your requests</h3>
+              <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 14 }}>
+                {totalMine} song{totalMine === 1 ? '' : 's'} added in total.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button
+                onClick={() => setSelectedDate(getTodayStr())}
+                style={{
+                  background: selectedDate === getTodayStr() ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
+                  color: selectedDate === getTodayStr() ? '#fff' : 'var(--text-muted)',
+                  border: 'none',
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Today
+              </button>
+              <button
+                onClick={() => setSelectedDate('All')}
+                style={{
+                  background: selectedDate === 'All' ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
+                  color: selectedDate === 'All' ? '#fff' : 'var(--text-muted)',
+                  border: 'none',
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                All Dates
+              </button>
+              <input
+                type="date"
+                max={getTodayStr()}
+                value={selectedDate !== 'All' ? selectedDate : ''}
+                onChange={(e) => {
+                  if (e.target.value) setSelectedDate(e.target.value);
+                }}
+                style={{
+                  padding: '5px 8px',
+                  borderRadius: 6,
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'var(--text)',
+                  fontSize: 12,
+                  outline: 'none',
+                  cursor: 'pointer'
+                }}
+              />
+            </div>
+          </div>
           {myStats.length === 0 ? (
             <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: 0 }}>
               You haven't requested any songs yet. Head over to the Queue to search and add your favorite tracks!
             </p>
+          ) : filteredStats.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: 0 }}>
+              No songs requested on {selectedDate === getTodayStr() ? 'today' : selectedDate}.
+            </p>
           ) : (
-            myStats.map((r) => (
-              <div key={r.day} style={{ padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 4 }}>
-                  <span style={{ color: 'var(--text-muted)' }}>{r.day}</span>
-                  <span style={{ fontWeight: 600 }}>{r.count}</span>
-                </div>
-                {r.track_names && r.track_names.length > 0 && (
-                  <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
-                    {r.track_names.map((t: string, i: number) => (
-                      <li key={i}>{t}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {filteredStats.map((r) => {
+                const isExpanded = !!expandedMyDates[r.day];
+                return (
+                  <div key={r.day} style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, overflow: 'hidden' }}>
+                    <button
+                      onClick={() => toggleMyDate(r.day)}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '12px 16px',
+                        background: 'var(--surface-raised)',
+                        border: 'none',
+                        color: 'var(--text)',
+                        cursor: 'pointer',
+                        textAlign: 'left'
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 15 }}>{r.day}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.count} songs</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
+                      </div>
+                    </button>
+                    {isExpanded && r.track_names && r.track_names.length > 0 && (
+                      <div style={{ padding: '0 16px 16px', background: 'var(--surface-raised)' }}>
+                        <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
+                          {r.track_names.map((t: string, i: number) => (
+                            <li key={i}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
 
