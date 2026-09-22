@@ -119,3 +119,44 @@ input:focus, select:focus, button:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
+
+.page-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+.card-scrollable {
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+  
+  .queue-grid {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    min-height: auto;
+  }
+
+  .card-scrollable {
+    overflow-y: visible;
+    flex: none;
+  }
+}

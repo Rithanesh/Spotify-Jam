@@ -1,3 +1,4 @@
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -8,6 +9,7 @@ from ..config import SPOTIFY_REDIRECT_URI
 from ..database import get_db, now, write_audit_log
 from ..deps import get_current_user, require_admin
 from ..spotify_helpers import get_lan_ip, get_spotify_credentials, save_spotify_credentials
+from ..mdns import start_mdns, stop_mdns
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -65,6 +67,19 @@ def get_settings(user: dict = Depends(get_current_user)):
     lan_ip = get_lan_ip()
     lan_port = settings.get("lan_port", "9000")
     shareable_url = settings.get("shareable_url") or f"http://app.spotify.com:{lan_port}"
+
+    try:
+        parsed = urlparse(shareable_url)
+        host = parsed.hostname
+        if host and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host) and host not in ("127.0.0.1", lan_ip):
+            new_url = f"{parsed.scheme}://{lan_ip}:{parsed.port or lan_port}{parsed.path}"
+            with get_db() as conn:
+                conn.execute("UPDATE app_settings SET value = ? WHERE key = 'shareable_url'", (new_url,))
+                conn.commit()
+            shareable_url = new_url
+    except Exception:
+        pass
+
     client_id, client_secret = get_spotify_credentials()
 
     # Never send the plain client secret over the wire
@@ -95,6 +110,13 @@ def toggle_discoverable(body: ToggleDiscoverableRequest, admin: dict = Depends(r
         )
         write_audit_log(conn, admin["id"], "discoverable_toggled", metadata={"enabled": body.enabled})
         conn.commit()
+    
+    if body.enabled:
+        stop_mdns()
+        start_mdns()
+    else:
+        stop_mdns()
+
     return {"discoverable_on_network": body.enabled}
 
 

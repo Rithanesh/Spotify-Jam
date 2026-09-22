@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { apiFetch } from '../../lib/api';
 import Loader from '../../components/Loader';
@@ -47,12 +47,28 @@ export default function QueuePage() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [error, setError] = useState('');
   const [searching, setSearching] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [spotifyConnected, setSpotifyConnected] = useState<boolean | null>(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const [liveQueue, setLiveQueue] = useState<SearchResult[]>([]);
   const [autoPush, setAutoPush] = useState<boolean>(false);
+  const [addedSongs, setAddedSongs] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ message: string, id: number } | null>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setSearchOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
   async function loadQueue() {
     try {
@@ -138,20 +154,38 @@ export default function QueuePage() {
     e.preventDefault();
   }
 
+  async function skipCurrent() {
+    try {
+      await apiFetch('/api/queue/skip', { method: 'POST' });
+      loadQueue();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   async function addSong(track: SearchResult) {
-    await apiFetch('/api/queue', {
-      method: 'POST',
-      body: JSON.stringify({
-        uri: track.uri,
-        name: track.name,
-        artist: track.artist,
-        album_art_url: track.album_art_url,
-        duration_ms: track.duration_ms,
-      }),
-    });
-    setResults([]);
-    setQuery('');
-    loadQueue();
+    try {
+      await apiFetch('/api/queue', {
+        method: 'POST',
+        body: JSON.stringify({
+          uri: track.uri,
+          name: track.name,
+          artist: track.artist,
+          album_art_url: track.album_art_url,
+          duration_ms: track.duration_ms,
+        }),
+      });
+      setAddedSongs(prev => {
+        const next = new Set(prev);
+        next.add(track.uri);
+        return next;
+      });
+      setToast({ message: `Added "${track.name}" to queue`, id: Date.now() });
+      setTimeout(() => setToast(null), 3000);
+      loadQueue();
+    } catch (err) {
+      console.error('Failed to add song', err);
+    }
   }
 
   async function removeSong(id: number) {
@@ -231,41 +265,6 @@ export default function QueuePage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       <Navbar user={user} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', maxWidth: 1000, width: '100%', margin: '0 auto', padding: '32px 20px', minHeight: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>
-            Up next
-          </h1>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={refreshQueue}
-            disabled={refreshing}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 13,
-              padding: '6px 12px',
-              borderRadius: 6,
-              border: '1px solid var(--border)',
-              cursor: refreshing ? 'not-allowed' : 'pointer',
-              opacity: refreshing ? 0.7 : 1,
-            }}
-            title="Refresh the queue from Spotify and database"
-          >
-            <span
-              style={{
-                display: 'inline-block',
-                transition: 'transform 0.4s ease',
-                transform: refreshing ? 'rotate(360deg)' : 'none',
-              }}
-            >
-              🔄
-            </span>
-            <span>{refreshing ? 'Refreshing…' : 'Refresh Queue'}</span>
-          </button>
-        </div>
-
         {/* Current Playing in the top */}
         {nowPlaying && nowPlaying.track_name && (
           <div
@@ -303,10 +302,57 @@ export default function QueuePage() {
                   {nowPlaying.is_playing ? '▶ Now Playing on Spotify' : '⏸ Paused on Spotify'}
                 </span>
               </div>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                Live Stream
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {user?.role === 'admin' && (
+                  <button
+                    onClick={skipCurrent}
+                    className="btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)' }}
+                    title="Skip to next track on Spotify"
+                  >
+                    ⏭ Skip
+                  </button>
+                )}
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  Live Stream
+                </span>
+              </div>
             </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>
+            Up next
+          </h1>
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={refreshQueue}
+            disabled={refreshing}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 13,
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+              cursor: refreshing ? 'not-allowed' : 'pointer',
+              opacity: refreshing ? 0.7 : 1,
+            }}
+            title="Refresh the queue from Spotify and database"
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                transition: 'transform 0.4s ease',
+                transform: refreshing ? 'rotate(360deg)' : 'none',
+              }}
+            >
+              🔄
+            </span>
+            <span>{refreshing ? 'Refreshing…' : 'Refresh Queue'}</span>
+          </button>
+        </div>
+
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               {nowPlaying.album_art_url ? (
@@ -447,12 +493,13 @@ export default function QueuePage() {
           </div>
         )}
 
-        <div style={{ position: 'relative', marginBottom: 16, zIndex: 50 }}>
+        <div ref={searchContainerRef} style={{ position: 'relative', marginBottom: 16, zIndex: 50 }}>
           <form onSubmit={handleSearch} style={{ display: 'flex', gap: 8 }}>
             <input
               placeholder="Search a song or artist"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setSearchOpen(true)}
               style={{ flex: 1 }}
             />
             <button className="btn-primary" type="submit" disabled={searching}>
@@ -493,7 +540,7 @@ export default function QueuePage() {
             </div>
           )}
 
-          {results.length > 0 && (
+          {searchOpen && results.length > 0 && (
             <div className="card" style={{ 
               position: 'absolute', 
               top: '100%', 
@@ -501,7 +548,7 @@ export default function QueuePage() {
               right: 0, 
               marginTop: 8, 
               padding: 12, 
-              maxHeight: 400, 
+              maxHeight: 'min(400px, calc(100vh - 280px))', 
               overflowY: 'auto', 
               boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
               zIndex: 100
@@ -529,8 +576,16 @@ export default function QueuePage() {
                       <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
                     </div>
                   </div>
-                  <button className="btn-ghost" onClick={() => addSong(r)}>
-                    Add
+                  <button 
+                    className="btn-ghost" 
+                    onClick={() => addSong(r)}
+                    disabled={addedSongs.has(r.uri)}
+                    style={{ 
+                      color: addedSongs.has(r.uri) ? 'var(--success)' : 'inherit', 
+                      borderColor: addedSongs.has(r.uri) ? 'var(--success)' : 'var(--border)' 
+                    }}
+                  >
+                    {addedSongs.has(r.uri) ? '✓ Added' : 'Add'}
                   </button>
                 </div>
               ))}
@@ -758,6 +813,25 @@ export default function QueuePage() {
           </div>
         </div>
       </div>
+
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          bottom: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'var(--success)',
+          color: '#fff',
+          padding: '10px 20px',
+          borderRadius: 8,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          zIndex: 9999,
+          fontWeight: 600,
+          fontSize: 14,
+        }}>
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }

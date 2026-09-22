@@ -36,6 +36,11 @@ async def push_next_if_needed():
                 curr_uri = curr_playing.get("uri")
                 spotify_queue = [item.get("uri") for item in q_data.get("queue", []) if isinstance(item, dict) and item.get("uri")]
 
+                if not curr_uri and not spotify_queue:
+                    # If Spotify returns no active track and empty queue, the device session
+                    # likely timed out (e.g. paused for 30+ mins). Don't mark everything as played.
+                    return
+
                 import datetime
                 from .database import now
                 
