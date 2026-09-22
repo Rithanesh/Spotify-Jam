@@ -17,11 +17,11 @@ async def push_next_if_needed():
     now, push oldest pending item to Spotify's real queue."""
     # 1. Sync playback state: If an item was marked 'pushed' or 'playing', check if it's still playing/queued in Spotify
     with get_db() as conn:
-        active = conn.execute(
-            "SELECT * FROM queue_items WHERE status IN ('pushed','playing') ORDER BY position LIMIT 1"
-        ).fetchone()
+        actives = conn.execute(
+            "SELECT * FROM queue_items WHERE status IN ('pushed','playing') ORDER BY position"
+        ).fetchall()
 
-    if active:
+    if actives:
         try:
             token = await spotify_client._get_access_token()
             async with httpx.AsyncClient() as client:
@@ -34,29 +34,41 @@ async def push_next_if_needed():
                 q_data = q_resp.json()
                 curr_playing = q_data.get("currently_playing") or {}
                 curr_uri = curr_playing.get("uri")
-                spotify_queue = [item.get("uri") for item in q_data.get("queue", [])]
+                spotify_queue = [item.get("uri") for item in q_data.get("queue", []) if isinstance(item, dict) and item.get("uri")]
 
-                if active["track_uri"] == curr_uri:
-                    if active["status"] != "playing":
-                        with get_db() as conn:
-                            conn.execute("UPDATE queue_items SET status = 'playing' WHERE id = ?", (active["id"],))
-                            conn.commit()
-                    return  # currently playing, wait until it finishes
-                elif active["track_uri"] in spotify_queue:
-                    return  # still queued in Spotify, wait
-                else:
-                    # Not playing and no longer in Spotify queue (was cleared or played)
-                    import datetime
-                    from .database import now
-                    # Add a 15-second grace period after pushing before assuming it was skipped
-                    if active["pushed_at"]:
-                        pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00'))
-                        if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
-                            return # Spotify might just be slow to update, wait
-                    
-                    with get_db() as conn:
-                        conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
-                        conn.commit()
+                import datetime
+                from .database import now
+                
+                still_active = False
+
+                with get_db() as conn:
+                    for active in actives:
+                        if active["status"] == "playing":
+                            if active["track_uri"] == curr_uri:
+                                curr_uri = None
+                                still_active = True
+                            else:
+                                conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
+                        else:
+                            if active["track_uri"] == curr_uri:
+                                conn.execute("UPDATE queue_items SET status = 'playing' WHERE id = ?", (active["id"],))
+                                curr_uri = None
+                                still_active = True
+                            elif active["track_uri"] in spotify_queue:
+                                spotify_queue.remove(active["track_uri"])
+                                still_active = True
+                            else:
+                                if active["pushed_at"]:
+                                    pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00'))
+                                    if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
+                                        still_active = True
+                                        continue
+                                
+                                conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
+                    conn.commit()
+
+                if still_active:
+                    return
         except Exception as e:
             import logging
             logging.getLogger("spotify-jam-app.queue").debug(f"Queue sync check error: {e}")
