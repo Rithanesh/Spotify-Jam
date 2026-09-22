@@ -141,3 +141,14 @@ async def push_now(item_id: int, user: dict = Depends(get_current_user)):
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/skip")
+async def skip_now(user: dict = Depends(get_current_user)):
+    from ..deps import require_admin
+    require_admin(user)
+    try:
+        await spotify_client.skip_track()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

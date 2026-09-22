@@ -145,6 +145,8 @@ function createWindow() {
     },
   });
 
+  session.defaultSession.clearCache();
+
   if (DEV_START_URL) {
     mainWindow.loadURL(DEV_START_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });

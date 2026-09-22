@@ -113,6 +113,36 @@ async def push_to_live_queue(track_uri: str, device_id: str | None = None) -> No
         resp.raise_for_status()
 
 
+async def skip_track(device_id: str | None = None) -> None:
+    token = await _get_access_token()
+    params = {}
+    async with httpx.AsyncClient() as client:
+        if not device_id:
+            try:
+                pb = await client.get(
+                    f"{BASE_URL}/me/player",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=3.0,
+                )
+                if pb.status_code == 200:
+                    active_dev = pb.json().get("device", {})
+                    if active_dev.get("id"):
+                        device_id = active_dev["id"]
+            except Exception:
+                pass
+
+        if device_id:
+            params["device_id"] = device_id
+
+        resp = await client.post(
+            f"{BASE_URL}/me/player/next",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+
+
 async def get_currently_playing() -> dict | None:
     token = await _get_access_token()
     async with httpx.AsyncClient() as client:
