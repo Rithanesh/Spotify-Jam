@@ -265,6 +265,41 @@ export default function QueuePage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       <Navbar user={user} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', maxWidth: 1000, width: '100%', margin: '0 auto', padding: '32px 20px', minHeight: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>
+            Up next
+          </h1>
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={refreshQueue}
+            disabled={refreshing}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 13,
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+              cursor: refreshing ? 'not-allowed' : 'pointer',
+              opacity: refreshing ? 0.7 : 1,
+            }}
+            title="Refresh the queue from Spotify and database"
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                transition: 'transform 0.4s ease',
+                transform: refreshing ? 'rotate(360deg)' : 'none',
+              }}
+            >
+              🔄
+            </span>
+            <span>{refreshing ? 'Refreshing…' : 'Refresh Queue'}</span>
+          </button>
+        </div>
+
         {/* Current Playing in the top */}
         {nowPlaying && nowPlaying.track_name && (
           <div
@@ -318,41 +353,6 @@ export default function QueuePage() {
                 </span>
               </div>
             </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h1 className="heading" style={{ fontSize: 24, margin: 0 }}>
-            Up next
-          </h1>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={refreshQueue}
-            disabled={refreshing}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 13,
-              padding: '6px 12px',
-              borderRadius: 6,
-              border: '1px solid var(--border)',
-              cursor: refreshing ? 'not-allowed' : 'pointer',
-              opacity: refreshing ? 0.7 : 1,
-            }}
-            title="Refresh the queue from Spotify and database"
-          >
-            <span
-              style={{
-                display: 'inline-block',
-                transition: 'transform 0.4s ease',
-                transform: refreshing ? 'rotate(360deg)' : 'none',
-              }}
-            >
-              🔄
-            </span>
-            <span>{refreshing ? 'Refreshing…' : 'Refresh Queue'}</span>
-          </button>
-        </div>
-
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               {nowPlaying.album_art_url ? (
