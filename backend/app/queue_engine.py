@@ -44,35 +44,41 @@ async def push_next_if_needed():
                 import datetime
                 from .database import now
                 
-                still_active = False
+                has_active_in_spotify = False
 
                 with get_db() as conn:
                     for active in actives:
                         if active["status"] == "playing":
                             if active["track_uri"] == curr_uri:
                                 curr_uri = None
-                                still_active = True
+                                has_active_in_spotify = True
                             else:
                                 conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
                         else:
                             if active["track_uri"] == curr_uri:
                                 conn.execute("UPDATE queue_items SET status = 'playing' WHERE id = ?", (active["id"],))
                                 curr_uri = None
-                                still_active = True
+                                has_active_in_spotify = True
                             elif active["track_uri"] in spotify_queue:
                                 spotify_queue.remove(active["track_uri"])
-                                still_active = True
+                                has_active_in_spotify = True
                             else:
                                 if active["pushed_at"]:
                                     pushed_dt = datetime.datetime.fromisoformat(active["pushed_at"].replace('Z', '+00:00'))
-                                    if (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds() < 15:
-                                        still_active = True
+                                    age = (datetime.datetime.now(datetime.timezone.utc) - pushed_dt).total_seconds()
+                                    if age < 15:
+                                        has_active_in_spotify = True
+                                        continue
+                                    
+                                    # If not seen in Spotify API, keep it 'pushed' for 4 hours before marking 'played'
+                                    # to account for Spotify API truncation/bugs.
+                                    if age < 14400:
                                         continue
                                 
                                 conn.execute("UPDATE queue_items SET status = 'played', played_at = ? WHERE id = ?", (now(), active["id"]))
                     conn.commit()
 
-                if still_active:
+                if has_active_in_spotify or len(q_data.get("queue", [])) >= 20:
                     return
         except Exception as e:
             import logging
@@ -190,16 +196,34 @@ def reorder_song(user_id: int, item_id: int, new_position: int) -> None:
         conn.commit()
 
 
-def list_pending(include_all: bool = False):
+def list_pending(include_all: bool = False, limit: int = None):
     with get_db() as conn:
         status_filter = "status IN ('pending','pushed','playing')" if not include_all else "status IN ('pending','pushed','playing','played','removed','skipped')"
-        rows = conn.execute(
-            f"""
-            SELECT q.*, u.username as added_by_username, u.display_name as added_by_display_name, u.role as added_by_role
-            FROM queue_items q
-            LEFT JOIN users u ON q.added_by = u.id
-            WHERE {status_filter}
-            ORDER BY q.position ASC, q.added_at ASC
-            """
-        ).fetchall()
-    return [dict(r) for r in rows]
+        
+        if include_all:
+            total = conn.execute(f"SELECT COUNT(*) as c FROM queue_items WHERE {status_filter}").fetchone()["c"]
+            limit_clause = f" LIMIT {limit}" if limit else ""
+            rows = conn.execute(
+                f"""
+                SELECT q.*, u.username as added_by_username, u.display_name as added_by_display_name, u.role as added_by_role
+                FROM queue_items q
+                LEFT JOIN users u ON q.added_by = u.id
+                WHERE {status_filter}
+                ORDER BY q.position DESC, q.added_at DESC
+                {limit_clause}
+                """
+            ).fetchall()
+            items = [dict(r) for r in rows]
+            items.reverse()
+            return {"items": items, "total": total}
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT q.*, u.username as added_by_username, u.display_name as added_by_display_name, u.role as added_by_role
+                FROM queue_items q
+                LEFT JOIN users u ON q.added_by = u.id
+                WHERE {status_filter}
+                ORDER BY q.position ASC, q.added_at ASC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]

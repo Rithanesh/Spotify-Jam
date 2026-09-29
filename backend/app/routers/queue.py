@@ -90,13 +90,21 @@ async def get_spotify_live_queue(user: dict = Depends(get_current_user)):
             return {"queue": []}
         data = resp.json()
         queue = []
+        # Check which URIs were recently pushed by our app
+        app_uris = set()
+        from ..database import get_db
+        with get_db() as conn:
+            rows = conn.execute("SELECT DISTINCT track_uri FROM queue_items WHERE status IN ('pending', 'pushed', 'playing')").fetchall()
+            app_uris = {r["track_uri"] for r in rows}
+            
         for i, item in enumerate(data.get("queue", [])[:20]): # Limit to next 20 to avoid large payloads
             queue.append({
                 "uri": item.get("uri"),
                 "track_name": item.get("name"),
                 "artist_name": ", ".join(a.get("name", "") for a in item.get("artists", [])),
                 "album_art_url": item.get("album", {}).get("images", [{}])[0].get("url") if item.get("album", {}).get("images") else None,
-                "duration_ms": item.get("duration_ms", 0)
+                "duration_ms": item.get("duration_ms", 0),
+                "is_app_pushed": item.get("uri") in app_uris
             })
         return {"queue": queue}
     except Exception as e:
@@ -105,9 +113,9 @@ async def get_spotify_live_queue(user: dict = Depends(get_current_user)):
 
 
 @router.get("")
-def list_queue(all: bool = False, user: dict = Depends(get_current_user)):
+def list_queue(all: bool = False, limit: int = None, user: dict = Depends(get_current_user)):
     include_all = all and user.get("role") == "admin"
-    return queue_engine.list_pending(include_all=include_all)
+    return queue_engine.list_pending(include_all=include_all, limit=limit)
 
 
 @router.post("")
