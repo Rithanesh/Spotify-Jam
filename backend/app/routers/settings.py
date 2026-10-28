@@ -66,19 +66,26 @@ def get_settings(user: dict = Depends(get_current_user)):
 
     lan_ip = get_lan_ip()
     lan_port = settings.get("lan_port", "9000")
-    shareable_url = settings.get("shareable_url") or f"http://app.spotify.com:{lan_port}"
+    shareable_url = settings.get("shareable_url")
 
-    try:
-        parsed = urlparse(shareable_url)
-        host = parsed.hostname
-        if host and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host) and host not in ("127.0.0.1", lan_ip):
-            new_url = f"{parsed.scheme}://{lan_ip}:{parsed.port or lan_port}{parsed.path}"
-            with get_db() as conn:
-                conn.execute("UPDATE app_settings SET value = ? WHERE key = 'shareable_url'", (new_url,))
-                conn.commit()
-            shareable_url = new_url
-    except Exception:
-        pass
+    # Migrate legacy app.spotify.com or missing shareable_url to guaranteed LAN IP
+    if not shareable_url or "app.spotify.com" in shareable_url:
+        shareable_url = f"http://{lan_ip}:{lan_port}"
+        with get_db() as conn:
+            conn.execute("UPDATE app_settings SET value = ? WHERE key = 'shareable_url'", (shareable_url,))
+            conn.commit()
+    else:
+        try:
+            parsed = urlparse(shareable_url)
+            host = parsed.hostname
+            if host and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host) and host not in ("127.0.0.1", lan_ip):
+                new_url = f"{parsed.scheme}://{lan_ip}:{parsed.port or lan_port}{parsed.path}"
+                with get_db() as conn:
+                    conn.execute("UPDATE app_settings SET value = ? WHERE key = 'shareable_url'", (new_url,))
+                    conn.commit()
+                shareable_url = new_url
+        except Exception:
+            pass
 
     client_id, client_secret = get_spotify_credentials()
 
@@ -87,11 +94,16 @@ def get_settings(user: dict = Depends(get_current_user)):
 
     host_status = check_host_status(shareable_url, lan_ip)
 
+    raw_hostname = socket.gethostname()
+    bonjour_host = raw_hostname if raw_hostname.endswith(".local") else f"{raw_hostname}.local"
+
     settings.update({
         "lan_ip": lan_ip,
         "lan_url": shareable_url,
         "shareable_url": shareable_url,
         "lan_ip_url": f"http://{lan_ip}:{lan_port}",
+        "bonjour_host": bonjour_host,
+        "bonjour_url": f"http://{bonjour_host}:{lan_port}",
         "spotify_client_id": client_id,
         "has_spotify_secret": bool(client_secret),
         "spotify_redirect_uri": SPOTIFY_REDIRECT_URI,
@@ -101,7 +113,7 @@ def get_settings(user: dict = Depends(get_current_user)):
 
 
 @router.patch("/discoverable")
-def toggle_discoverable(body: ToggleDiscoverableRequest, admin: dict = Depends(require_admin)):
+async def toggle_discoverable(body: ToggleDiscoverableRequest, admin: dict = Depends(require_admin)):
     value = "true" if body.enabled else "false"
     with get_db() as conn:
         conn.execute(
@@ -112,16 +124,16 @@ def toggle_discoverable(body: ToggleDiscoverableRequest, admin: dict = Depends(r
         conn.commit()
     
     if body.enabled:
-        stop_mdns()
-        start_mdns()
+        await stop_mdns()
+        await start_mdns()
     else:
-        stop_mdns()
+        await stop_mdns()
 
     return {"discoverable_on_network": body.enabled}
 
 
 @router.patch("/shareable-url")
-def update_shareable_url(body: ShareableUrlRequest, admin: dict = Depends(require_admin)):
+async def update_shareable_url(body: ShareableUrlRequest, admin: dict = Depends(require_admin)):
     url = body.url.strip() or "http://app.spotify.com:9000"
     if not url.startswith("http://") and not url.startswith("https://"):
         url = f"http://{url}"
@@ -143,6 +155,15 @@ def update_shareable_url(body: ShareableUrlRequest, admin: dict = Depends(requir
 
     lan_ip = get_lan_ip()
     host_status = check_host_status(url, lan_ip)
+
+    # Refresh mDNS advertisement if currently discoverable
+    with get_db() as conn:
+        disc_row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'discoverable_on_network'"
+        ).fetchone()
+        if disc_row and disc_row["value"] == "true":
+            await stop_mdns()
+            await start_mdns()
 
     return {
         "shareable_url": url,
