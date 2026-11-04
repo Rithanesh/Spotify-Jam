@@ -51,7 +51,10 @@ fi
   --hidden-import jose.jwk \
   --hidden-import jose.jws \
   --hidden-import jose.jwt \
+  --collect-submodules zeroconf \
+  --collect-data zeroconf \
   --hidden-import zeroconf \
+  --hidden-import zeroconf.asyncio \
   --hidden-import ifaddr \
   --hidden-import argon2 \
   --hidden-import argon2.low_level \

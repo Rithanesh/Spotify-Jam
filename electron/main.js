@@ -48,16 +48,21 @@ loadDotenvIfAvailable();
 function resolveBackendBinary() {
   const binName = process.platform === 'win32' ? 'spotify-jam-backend.exe' : 'spotify-jam-backend';
   const packaged = path.join(process.resourcesPath, 'backend', binName);
-  const devBinary = path.join(__dirname, '..', 'backend', 'dist', binName);
-  if (fs.existsSync(packaged)) return { cmd: packaged, args: [] };
-  if (fs.existsSync(devBinary)) return { cmd: devBinary, args: [] };
+  if (app.isPackaged && fs.existsSync(packaged)) return { cmd: packaged, args: [] };
 
-  // No PyInstaller build yet — run straight from the venv created by
-  // scripts/setup.sh, so `npm run electron-dev` works with zero build step.
+  // In development, prefer running straight from the python venv so code changes
+  // are immediately active without needing a PyInstaller rebuild.
   const venvPython = process.platform === 'win32'
     ? path.join(__dirname, '..', 'backend', '.venv', 'Scripts', 'python.exe')
     : path.join(__dirname, '..', 'backend', '.venv', 'bin', 'python3');
-  const pythonCmd = fs.existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python' : 'python3');
+  if (fs.existsSync(venvPython)) {
+    return { cmd: venvPython, args: [path.join(__dirname, '..', 'backend', 'run.py')] };
+  }
+
+  const devBinary = path.join(__dirname, '..', 'backend', 'dist', binName);
+  if (fs.existsSync(devBinary)) return { cmd: devBinary, args: [] };
+
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
   return { cmd: pythonCmd, args: [path.join(__dirname, '..', 'backend', 'run.py')] };
 }
 

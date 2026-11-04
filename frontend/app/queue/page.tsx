@@ -812,6 +812,16 @@ export default function QueuePage() {
                           </button>
                         </>
                       )}
+                      {item.status === 'pushed' && user.role === 'admin' && (
+                        <button
+                          className="btn-ghost"
+                          onClick={() => pushNow(item.id)}
+                          style={{ padding: '3px 8px', fontSize: 11, borderRadius: 4, whiteSpace: 'nowrap' }}
+                          title="Repush this song to Spotify's queue"
+                        >
+                          🔄 Repush
+                        </button>
+                      )}
                       {(user.role === 'admin' || user.username === item.added_by_username) && (
                         <button className="btn-ghost" onClick={() => removeSong(item.id)} aria-label="Remove" title="Remove song">
                           ✕

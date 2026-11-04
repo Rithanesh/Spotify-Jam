@@ -65,17 +65,17 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     init_db()
     _bootstrap_admin_if_needed()
     start_scheduler()
-    start_mdns()
+    await start_mdns()
     logger.info("app started, version=%s", APP_VERSION)
 
 
 @app.on_event("shutdown")
-def on_shutdown():
-    stop_mdns()
+async def on_shutdown():
+    await stop_mdns()
 
 
 def _bootstrap_admin_if_needed():

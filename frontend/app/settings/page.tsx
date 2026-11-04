@@ -21,8 +21,9 @@ export default function SettingsPage() {
   const [discoverable, setDiscoverable] = useState(false);
   const [lanPort, setLanPort] = useState('9000');
   const [lanIp, setLanIp] = useState('');
-  const [shareableUrl, setShareableUrl] = useState('http://app.spotify.com:9000');
-  const [urlInput, setUrlInput] = useState('http://app.spotify.com:9000');
+  const [bonjourHost, setBonjourHost] = useState('');
+  const [shareableUrl, setShareableUrl] = useState('');
+  const [urlInput, setUrlInput] = useState('');
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
 
   const [savingUrl, setSavingUrl] = useState(false);
@@ -44,9 +45,10 @@ export default function SettingsPage() {
       setDiscoverable(s.discoverable_on_network === 'true');
       setLanPort(s.lan_port || '9000');
       setLanIp(s.lan_ip || '127.0.0.1');
+      if (s.bonjour_host) setBonjourHost(s.bonjour_host);
 
-      // Load URL directly from DB
-      const dbUrl = s.shareable_url || s.lan_url || `http://app.spotify.com:${s.lan_port || '9000'}`;
+      // Load URL directly from DB, defaulting to direct Wi-Fi IP
+      const dbUrl = s.shareable_url || s.lan_url || `http://${s.lan_ip || '127.0.0.1'}:${s.lan_port || '9000'}`;
       setShareableUrl(dbUrl);
       setUrlInput(dbUrl);
       if (s.host_status) setHostStatus(s.host_status);
@@ -70,7 +72,7 @@ export default function SettingsPage() {
   }
 
   async function handleSaveUrl(targetUrl?: string) {
-    const toSave = (targetUrl || urlInput).trim() || `http://app.spotify.com:${lanPort}`;
+    const toSave = (targetUrl || urlInput).trim() || `http://${lanIp || '127.0.0.1'}:${lanPort}`;
     setSavingUrl(true);
     try {
       const res = await apiFetch('/api/settings/shareable-url', {
@@ -273,7 +275,7 @@ export default function SettingsPage() {
                     id="shareable-url-input"
                     value={urlInput}
                     onChange={(e) => setUrlInput(e.target.value)}
-                    placeholder="http://app.spotify.com:9000"
+                    placeholder={lanIp ? `http://${lanIp}:${lanPort}` : "http://192.168.0.x:9000"}
                     style={{
                       flex: 1,
                       fontSize: 14,
@@ -314,29 +316,6 @@ export default function SettingsPage() {
                 {/* Quick Presets */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Quick Presets (1-Click Apply & Save):</span>
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(`http://spotifyjam.local:${lanPort}`)}
-                    className="btn-ghost"
-                    style={{
-                      padding: '3px 8px',
-                      fontSize: 11,
-                      borderRadius: 4,
-                      border: '1px solid var(--accent)',
-                      color: 'var(--accent)',
-                      fontWeight: 700,
-                    }}
-                  >
-                    🚀 Local Domain (http://spotifyjam.local:{lanPort})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyPreset(`http://app.spotify.com:${lanPort}`)}
-                    className="btn-ghost"
-                    style={{ padding: '3px 8px', fontSize: 11, borderRadius: 4 }}
-                  >
-                    app.spotify.com:{lanPort}
-                  </button>
                   {lanIp && (
                     <button
                       type="button"
@@ -346,12 +325,55 @@ export default function SettingsPage() {
                         padding: '3px 8px',
                         fontSize: 11,
                         borderRadius: 4,
+                        border: '1px solid var(--accent)',
+                        color: 'var(--accent)',
+                        fontWeight: 700,
                       }}
                     >
-                      Wi-Fi IP (http://{lanIp}:{lanPort})
+                      ⚡ Wi-Fi IP (http://{lanIp}:{lanPort}) [Guaranteed]
                     </button>
                   )}
+                  {bonjourHost && (
+                    <button
+                      type="button"
+                      onClick={() => applyPreset(`http://${bonjourHost}:${lanPort}`)}
+                      className="btn-ghost"
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        borderRadius: 4,
+                      }}
+                    >
+                      🍎 Mac Bonjour (http://{bonjourHost}:{lanPort})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(`http://spotifyjam.local:${lanPort}`)}
+                    className="btn-ghost"
+                    style={{
+                      padding: '3px 8px',
+                      fontSize: 11,
+                      borderRadius: 4,
+                    }}
+                  >
+                    spotifyjam.local:{lanPort}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(`http://app.spotify.com:${lanPort}`)}
+                    className="btn-ghost"
+                    style={{ padding: '3px 8px', fontSize: 11, borderRadius: 4 }}
+                  >
+                    app.spotify.com:{lanPort}
+                  </button>
                 </div>
+
+                {currentHostname.endsWith('.local') && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    ℹ️ <strong>Device Compatibility:</strong> <code>.local</code> domains resolve automatically on Apple (iPhone, iPad, Mac) and Windows via mDNS. <strong>Android browsers</strong> do not support <code>.local</code> lookup — use the <strong>Wi-Fi IP</strong> preset above for Android devices.
+                  </div>
+                )}
 
                 {/* Cross-platform Host Resolver Assistance (Windows & Mac) */}
                 {hostStatus && !hostStatus.is_local && (
@@ -369,10 +391,15 @@ export default function SettingsPage() {
                     }}
                   >
                     <div style={{ color: 'var(--text)', fontWeight: 600 }}>
-                      Why is &ldquo;{currentHostname}&rdquo; loading indefinitely?
+                      Why is &ldquo;{currentHostname}&rdquo; loading indefinitely or failing to resolve?
                     </div>
                     <div style={{ color: 'var(--text-muted)' }}>
-                      <code>{currentHostname}</code> points to an external internet IP (<code>{hostStatus.resolved_ip || 'unknown'}</code>) rather than your computer. To make this custom name open your app on <strong>Windows</strong> or <strong>Mac</strong>:
+                      {hostStatus.resolved_ip ? (
+                        <><code>{currentHostname}</code> points to an external internet IP (<code>{hostStatus.resolved_ip}</code>) rather than your computer.</>
+                      ) : (
+                        <><code>{currentHostname}</code> could not be resolved on your local network.</>
+                      )}{' '}
+                      To route this custom domain to your app on <strong>Windows</strong> or <strong>Mac</strong>:
                     </div>
 
                     {/* Windows Command */}
