@@ -161,6 +161,33 @@ def add_song(user_id: int, track: dict) -> int:
     return item_id
 
 
+def add_songs_batch(user_id: int, tracks: list[dict]) -> list[int]:
+    if not tracks:
+        return []
+    with get_db() as conn:
+        max_pos = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) AS m FROM queue_items"
+        ).fetchone()["m"]
+        now_ts = now()
+        inserted_ids = []
+        for idx, track in enumerate(tracks):
+            cur = conn.execute(
+                """INSERT INTO queue_items
+                   (track_uri, track_name, artist_name, album_art_url, duration_ms, added_by, position, status, added_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (track["uri"], track["name"], track["artist"], track.get("album_art_url"),
+                 track.get("duration_ms"), user_id, max_pos + 1 + idx, now_ts),
+            )
+            inserted_ids.append(cur.lastrowid)
+
+        write_audit_log(
+            conn, user_id, "songs_batch_added", "queue_item", inserted_ids[0] if inserted_ids else None,
+            {"count": len(inserted_ids), "first_track": tracks[0]["name"] if tracks else None}
+        )
+        conn.commit()
+    return inserted_ids
+
+
 def remove_song(user_id: int, user_role: str, item_id: int) -> None:
     with get_db() as conn:
         item = conn.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,)).fetchone()

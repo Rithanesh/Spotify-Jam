@@ -17,6 +17,10 @@ class AddSongRequest(BaseModel):
     duration_ms: int | None = None
 
 
+class BatchAddSongRequest(BaseModel):
+    tracks: list[AddSongRequest]
+
+
 class ReorderRequest(BaseModel):
     new_position: int
 
@@ -52,6 +56,64 @@ async def search(q: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"Spotify track search error: {e}")
         raise HTTPException(status_code=400, detail=f"Search failed: {e}")
+
+
+@router.get("/search-playlists")
+async def search_playlists(q: str = "", user: dict = Depends(get_current_user)):
+    q = (q or "").strip()
+    if not q:
+        return {"playlists": [], "direct": False}
+    try:
+        playlist_id = spotify_client.extract_playlist_id(q)
+        if playlist_id:
+            try:
+                details = await spotify_client.get_playlist_details(playlist_id, offset=0, limit=100)
+                return {
+                    "playlists": [{
+                        "id": details["id"],
+                        "name": details["name"],
+                        "description": details["description"],
+                        "cover_url": details["cover_url"],
+                        "owner": details["owner"],
+                        "total_tracks": details["total_tracks"],
+                        "uri": details["uri"],
+                    }],
+                    "direct": True,
+                }
+            except Exception as e:
+                logger.debug(f"Direct playlist fetch by id/url failed, falling back to search: {e}")
+
+        results = await spotify_client.search_playlists(q)
+        return {"playlists": results, "direct": False}
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail="No Spotify account connected yet. Please go to Settings and click 'Connect Spotify Account' first.",
+        )
+    except Exception as e:
+        logger.warning(f"Spotify playlist search error: {e}")
+        raise HTTPException(status_code=400, detail=f"Playlist search failed: {e}")
+
+
+@router.get("/playlist/{playlist_id}")
+async def get_playlist(playlist_id: str, offset: int = 0, limit: int = 100, user: dict = Depends(get_current_user)):
+    try:
+        return await spotify_client.get_playlist_details(playlist_id, offset=offset, limit=limit)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"Error fetching playlist details: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch playlist: {e}")
+
+
+@router.get("/user-playlists")
+async def get_user_playlists(user: dict = Depends(get_current_user)):
+    try:
+        playlists = await spotify_client.get_user_playlists()
+        return {"playlists": playlists}
+    except Exception as e:
+        logger.debug(f"Error fetching user playlists: {e}")
+        return {"playlists": []}
 
 
 @router.get("/now-playing")
@@ -122,6 +184,20 @@ def list_queue(all: bool = False, limit: int = None, user: dict = Depends(get_cu
 def add(body: AddSongRequest, user: dict = Depends(get_current_user)):
     item_id = queue_engine.add_song(user["id"], body.model_dump())
     return {"id": item_id}
+
+
+@router.post("/batch")
+def add_batch(body: BatchAddSongRequest, user: dict = Depends(get_current_user)):
+    if not body.tracks:
+        raise HTTPException(status_code=400, detail="No tracks provided.")
+    if user.get("role") != "admin" and len(body.tracks) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Members can add at most 50 songs per batch. Please select up to 50 songs.",
+        )
+    track_dicts = [t.model_dump() for t in body.tracks]
+    item_ids = queue_engine.add_songs_batch(user["id"], track_dicts)
+    return {"added_count": len(item_ids), "ids": item_ids}
 
 
 @router.delete("/{item_id}")

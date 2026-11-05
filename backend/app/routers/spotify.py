@@ -14,7 +14,7 @@ from ..spotify_helpers import get_spotify_credentials
 router = APIRouter(prefix="/api/spotify", tags=["spotify"])
 logger = logging.getLogger("spotify-jam-app")
 
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming"
+SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming playlist-read-private playlist-read-collaborative"
 
 
 @router.get("/status")

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { apiFetch } from '../../lib/api';
 import Loader from '../../components/Loader';
@@ -30,6 +30,38 @@ interface SearchResult {
   is_app_pushed?: boolean;
 }
 
+interface PlaylistSummary {
+  id: string;
+  name: string;
+  description: string;
+  cover_url: string | null;
+  owner: string;
+  total_tracks: number;
+  uri?: string;
+}
+
+interface PlaylistTrack {
+  uri: string;
+  name: string;
+  artist: string;
+  album_art_url: string | null;
+  duration_ms: number;
+}
+
+interface PlaylistDetail {
+  id: string;
+  name: string | null;
+  description: string | null;
+  cover_url: string | null;
+  owner: string | null;
+  total_tracks: number;
+  tracks: PlaylistTrack[];
+  offset: number;
+  limit: number;
+  has_more: boolean;
+  uri?: string;
+}
+
 interface NowPlayingInfo {
   is_playing: boolean;
   progress_ms: number;
@@ -54,6 +86,19 @@ export default function QueuePage() {
   const [spotifyConnected, setSpotifyConnected] = useState<boolean | null>(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Playlist search and inspection states
+  const [searchMode, setSearchMode] = useState<'tracks' | 'playlists'>('tracks');
+  const [playlistResults, setPlaylistResults] = useState<PlaylistSummary[]>([]);
+  const [userPlaylists, setUserPlaylists] = useState<PlaylistSummary[]>([]);
+  const [loadingUserPlaylists, setLoadingUserPlaylists] = useState(false);
+  const [activePlaylistSummary, setActivePlaylistSummary] = useState<PlaylistSummary | null>(null);
+  const [activePlaylist, setActivePlaylist] = useState<PlaylistDetail | null>(null);
+  const [loadingPlaylist, setLoadingPlaylist] = useState(false);
+  const [selectedTrackUris, setSelectedTrackUris] = useState<Set<string>>(new Set());
+  const [skipExisting, setSkipExisting] = useState<boolean>(true);
+  const [addingBatch, setAddingBatch] = useState(false);
+  const [loadingMoreTracks, setLoadingMoreTracks] = useState(false);
 
   const [liveQueue, setLiveQueue] = useState<SearchResult[]>([]);
   const [autoPush, setAutoPush] = useState<boolean>(false);
@@ -134,25 +179,224 @@ export default function QueuePage() {
     return () => clearInterval(interval);
   }, [user, historyLimit]);
 
+  const activeQueueUris = useMemo(() => {
+    if (!queue) return new Set<string>();
+    return new Set(
+      queue
+        .filter((q) => q.status === 'pending' || q.status === 'playing' || q.status === 'pushed')
+        .map((q) => q.track_uri)
+    );
+  }, [queue]);
+
+  const totalSelectedMs = useMemo(() => {
+    if (!activePlaylist) return 0;
+    return activePlaylist.tracks
+      .filter((t) => selectedTrackUris.has(t.uri))
+      .reduce((acc, t) => acc + (t.duration_ms || 0), 0);
+  }, [activePlaylist, selectedTrackUris]);
+
+  const totalSelectedMinutes = Math.round(totalSelectedMs / 60000);
+
+  function formatDuration(ms?: number) {
+    if (!ms) return '0:00';
+    const totalSecs = Math.floor(ms / 1000);
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
+
+  async function loadUserPlaylists() {
+    setLoadingUserPlaylists(true);
+    try {
+      const res = await apiFetch('/api/queue/user-playlists');
+      setUserPlaylists(res.playlists || []);
+    } catch (err) {
+      console.debug('Failed to load user playlists', err);
+    } finally {
+      setLoadingUserPlaylists(false);
+    }
+  }
+
+  function handleModeSwitch(mode: 'tracks' | 'playlists') {
+    setSearchMode(mode);
+    setError('');
+    setSearchOpen(true);
+    if (mode === 'playlists') {
+      if (!query.trim() && userPlaylists.length === 0) {
+        loadUserPlaylists();
+      } else if (query.trim()) {
+        executeSearch(query, mode);
+      }
+    } else {
+      if (query.trim()) {
+        executeSearch(query, mode);
+      }
+    }
+  }
+
+  async function openPlaylistModal(playlist: PlaylistSummary) {
+    setActivePlaylistSummary(playlist);
+    setActivePlaylist(null);
+    setLoadingPlaylist(true);
+    setError('');
+    try {
+      const data: PlaylistDetail = await apiFetch(`/api/queue/playlist/${playlist.id}?offset=0&limit=100`);
+      setActivePlaylist(data);
+      // Auto-select eligible tracks
+      const eligible = data.tracks.filter((t) => !activeQueueUris.has(t.uri));
+      if (user?.role !== 'admin' && eligible.length > 50) {
+        setSelectedTrackUris(new Set(eligible.slice(0, 50).map((t) => t.uri)));
+      } else {
+        setSelectedTrackUris(new Set(eligible.map((t) => t.uri)));
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to load playlist tracks.');
+      setActivePlaylistSummary(null);
+    } finally {
+      setLoadingPlaylist(false);
+    }
+  }
+
+  function closePlaylistModal() {
+    setActivePlaylist(null);
+    setActivePlaylistSummary(null);
+    setSelectedTrackUris(new Set());
+    setLoadingMoreTracks(false);
+  }
+
+  async function loadMoreTracks() {
+    if (!activePlaylist || !activePlaylist.has_more || loadingMoreTracks) return;
+    setLoadingMoreTracks(true);
+    try {
+      const nextOffset = activePlaylist.tracks.length;
+      const data = await apiFetch(`/api/queue/playlist/${activePlaylist.id}?offset=${nextOffset}&limit=100`);
+      const newTracks = [...activePlaylist.tracks, ...data.tracks];
+      setActivePlaylist({
+        ...activePlaylist,
+        tracks: newTracks,
+        offset: data.offset,
+        has_more: data.has_more,
+      });
+      // If user is admin, auto-select newly loaded eligible tracks
+      if (user?.role === 'admin') {
+        setSelectedTrackUris((prev) => {
+          const next = new Set(prev);
+          data.tracks.forEach((t: PlaylistTrack) => {
+            if (!skipExisting || !activeQueueUris.has(t.uri)) next.add(t.uri);
+          });
+          return next;
+        });
+      }
+    } catch (err: any) {
+      setToast({ message: 'Failed to load more tracks: ' + err.message, id: Date.now() });
+      setTimeout(() => setToast(null), 3000);
+    } finally {
+      setLoadingMoreTracks(false);
+    }
+  }
+
+  function toggleTrackSelection(uri: string) {
+    setSelectedTrackUris((prev) => {
+      const next = new Set(prev);
+      if (next.has(uri)) {
+        next.delete(uri);
+      } else {
+        if (user?.role !== 'admin' && next.size >= 50) {
+          setToast({ message: 'Members can select at most 50 songs per batch.', id: Date.now() });
+          setTimeout(() => setToast(null), 3000);
+          return next;
+        }
+        next.add(uri);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectAllToggle(checked: boolean) {
+    if (!activePlaylist) return;
+    if (!checked) {
+      setSelectedTrackUris(new Set());
+      return;
+    }
+    const eligible = activePlaylist.tracks.filter((t) => {
+      if (skipExisting && activeQueueUris.has(t.uri)) return false;
+      return true;
+    });
+    if (user?.role !== 'admin' && eligible.length > 50) {
+      setSelectedTrackUris(new Set(eligible.slice(0, 50).map((t) => t.uri)));
+      setToast({ message: 'Selected first 50 songs (member limit).', id: Date.now() });
+      setTimeout(() => setToast(null), 3000);
+    } else {
+      setSelectedTrackUris(new Set(eligible.map((t) => t.uri)));
+    }
+  }
+
+  async function handleBatchAdd() {
+    if (!activePlaylist) return;
+    const tracksToAdd = activePlaylist.tracks.filter((t) => selectedTrackUris.has(t.uri));
+    if (tracksToAdd.length === 0) return;
+
+    setAddingBatch(true);
+    try {
+      const res = await apiFetch('/api/queue/batch', {
+        method: 'POST',
+        body: JSON.stringify({ tracks: tracksToAdd }),
+      });
+
+      setAddedSongs((prev) => {
+        const next = new Set(prev);
+        tracksToAdd.forEach((t) => next.add(t.uri));
+        return next;
+      });
+
+      const playlistTitle = activePlaylist.name || activePlaylistSummary?.name || 'playlist';
+      setToast({
+        message: `Added ${res.added_count} songs from "${playlistTitle}" to queue!`,
+        id: Date.now(),
+      });
+      setTimeout(() => setToast(null), 4000);
+
+      closePlaylistModal();
+      loadQueue();
+    } catch (err: any) {
+      setError(err.message || 'Failed to add playlist tracks.');
+    } finally {
+      setAddingBatch(false);
+    }
+  }
+
   useEffect(() => {
     const handler = setTimeout(() => {
       if (query.trim()) {
         executeSearch(query);
       } else {
         setResults([]);
+        setPlaylistResults([]);
+        if (searchMode === 'playlists' && userPlaylists.length === 0) {
+          loadUserPlaylists();
+        }
       }
     }, 500);
     return () => clearTimeout(handler);
-  }, [query]);
+  }, [query, searchMode]);
 
-  async function executeSearch(q: string) {
+  async function executeSearch(q: string, overrideMode?: 'tracks' | 'playlists') {
+    const currentMode = overrideMode || searchMode;
     setError('');
     setSearching(true);
     try {
-      const r = await apiFetch(`/api/queue/search?q=${encodeURIComponent(q)}`);
-      setResults(r || []);
-      if (r && r.length === 0) {
-        setError('No songs found matching your search.');
+      if (currentMode === 'tracks') {
+        const r = await apiFetch(`/api/queue/search?q=${encodeURIComponent(q)}`);
+        setResults(r || []);
+        if (r && r.length === 0) {
+          setError('No songs found matching your search.');
+        }
+      } else {
+        const r = await apiFetch(`/api/queue/search-playlists?q=${encodeURIComponent(q)}`);
+        setPlaylistResults(r?.playlists || []);
+        if (r?.playlists && r.playlists.length === 0) {
+          setError('No playlists found matching your search or link.');
+        }
       }
     } catch (err: any) {
       setError(err.message || 'Search failed');
@@ -505,12 +749,68 @@ export default function QueuePage() {
         )}
 
         <div ref={searchContainerRef} style={{ position: 'relative', marginBottom: 16, zIndex: 50 }}>
+          {/* Mode Switcher */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{
+              display: 'inline-flex',
+              background: 'var(--surface-raised)',
+              padding: 3,
+              borderRadius: 8,
+              border: '1px solid var(--border)'
+            }}>
+              <button
+                type="button"
+                onClick={() => handleModeSwitch('tracks')}
+                style={{
+                  padding: '5px 14px',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: searchMode === 'tracks' ? 'var(--accent)' : 'transparent',
+                  color: searchMode === 'tracks' ? 'var(--accent-text)' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                🎵 Single Songs
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeSwitch('playlists')}
+                style={{
+                  padding: '5px 14px',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: searchMode === 'playlists' ? 'var(--accent)' : 'transparent',
+                  color: searchMode === 'playlists' ? 'var(--accent-text)' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                📑 Playlists
+              </button>
+            </div>
+            {searchMode === 'playlists' && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Search playlist name or paste Spotify link
+              </span>
+            )}
+          </div>
+
           <form onSubmit={handleSearch} style={{ display: 'flex', gap: 8 }}>
             <input
-              placeholder="Search a song or artist"
+              placeholder={searchMode === 'tracks' ? "Search a song or artist" : "Search playlists or paste Spotify playlist link (https://open.spotify.com/playlist/...)"}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onFocus={() => setSearchOpen(true)}
+              onFocus={() => {
+                setSearchOpen(true);
+                if (searchMode === 'playlists' && !query.trim() && userPlaylists.length === 0) {
+                  loadUserPlaylists();
+                }
+              }}
               style={{ flex: 1 }}
             />
             <button className="btn-primary" type="submit" disabled={searching}>
@@ -551,7 +851,7 @@ export default function QueuePage() {
             </div>
           )}
 
-          {searchOpen && results.length > 0 && (
+          {searchOpen && (
             <div className="card" style={{
               position: 'absolute',
               top: '100%',
@@ -559,47 +859,191 @@ export default function QueuePage() {
               right: 0,
               marginTop: 8,
               padding: 12,
-              maxHeight: 'min(400px, calc(100vh - 280px))',
+              maxHeight: 'min(420px, calc(100vh - 280px))',
               overflowY: 'auto',
               boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
               zIndex: 100
             }}>
-              {results.map((r) => (
-                <div
-                  key={r.uri}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '8px 4px',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    {r.album_art_url && (
-                      <img
-                        src={r.album_art_url}
-                        alt={r.name}
-                        style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
-                      />
-                    )}
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
-                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+              {searchMode === 'tracks' ? (
+                results.length > 0 ? (
+                  results.map((r) => (
+                    <div
+                      key={r.uri}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '8px 4px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {r.album_art_url && (
+                          <img
+                            src={r.album_art_url}
+                            alt={r.name}
+                            style={{ width: 40, height: 40, borderRadius: 4, objectFit: 'cover' }}
+                          />
+                        )}
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
+                          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{r.artist}</div>
+                        </div>
+                      </div>
+                      <button
+                        className="btn-ghost"
+                        onClick={() => addSong(r)}
+                        disabled={addedSongs.has(r.uri)}
+                        style={{
+                          color: addedSongs.has(r.uri) ? 'var(--success)' : 'inherit',
+                          borderColor: addedSongs.has(r.uri) ? 'var(--success)' : 'var(--border)'
+                        }}
+                      >
+                        {addedSongs.has(r.uri) ? '✓ Added' : 'Add'}
+                      </button>
                     </div>
+                  ))
+                ) : (
+                  !searching && query.trim() && (
+                    <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                      No songs found.
+                    </div>
+                  )
+                )
+              ) : (
+                /* Playlists Mode */
+                playlistResults.length > 0 ? (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8, padding: '0 4px' }}>
+                      Playlist Search Results
+                    </div>
+                    {playlistResults.map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '10px 8px',
+                          borderBottom: '1px solid var(--border)',
+                          borderRadius: 6,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1, marginRight: 12 }}>
+                          {p.cover_url ? (
+                            <img
+                              src={p.cover_url}
+                              alt={p.name}
+                              style={{ width: 46, height: 46, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+                            />
+                          ) : (
+                            <div style={{
+                              width: 46,
+                              height: 46,
+                              borderRadius: 6,
+                              background: 'var(--surface-raised)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 20,
+                              flexShrink: 0
+                            }}>
+                              📑
+                            </div>
+                          )}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {p.name}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                              By {p.owner} • {p.total_tracks} tracks
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          className="btn-primary"
+                          type="button"
+                          onClick={() => {
+                            setSearchOpen(false);
+                            openPlaylistModal(p);
+                          }}
+                          style={{ padding: '6px 14px', fontSize: 13, flexShrink: 0 }}
+                        >
+                          View Tracks →
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                  <button
-                    className="btn-ghost"
-                    onClick={() => addSong(r)}
-                    disabled={addedSongs.has(r.uri)}
-                    style={{
-                      color: addedSongs.has(r.uri) ? 'var(--success)' : 'inherit',
-                      borderColor: addedSongs.has(r.uri) ? 'var(--success)' : 'var(--border)'
-                    }}
-                  >
-                    {addedSongs.has(r.uri) ? '✓ Added' : 'Add'}
-                  </button>
-                </div>
-              ))}
+                ) : userPlaylists.length > 0 && !query.trim() ? (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8, padding: '0 4px' }}>
+                      Your Spotify Playlists
+                    </div>
+                    {userPlaylists.map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '10px 8px',
+                          borderBottom: '1px solid var(--border)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1, marginRight: 12 }}>
+                          {p.cover_url ? (
+                            <img
+                              src={p.cover_url}
+                              alt={p.name}
+                              style={{ width: 44, height: 44, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
+                            />
+                          ) : (
+                            <div style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: 6,
+                              background: 'var(--surface-raised)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 18,
+                              flexShrink: 0
+                            }}>
+                              📑
+                            </div>
+                          )}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {p.name}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                              {p.total_tracks} tracks
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          className="btn-primary"
+                          type="button"
+                          onClick={() => {
+                            setSearchOpen(false);
+                            openPlaylistModal(p);
+                          }}
+                          style={{ padding: '6px 14px', fontSize: 13, flexShrink: 0 }}
+                        >
+                          View Tracks →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : loadingUserPlaylists ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                    Loading your Spotify playlists…
+                  </div>
+                ) : (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                    Type a playlist name or paste a Spotify link (e.g. https://open.spotify.com/playlist/...) to view and import tracks.
+                  </div>
+                )
+              )}
             </div>
           )}
         </div>
@@ -847,6 +1291,369 @@ export default function QueuePage() {
           </div>
         </div>
       </div>
+
+      {/* Playlist Inspection & Batch Add Modal */}
+      {activePlaylistSummary && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: 20,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !addingBatch) closePlaylistModal();
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: 750,
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.7)',
+              overflow: 'hidden',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            {/* Modal Header */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border)',
+              background: 'var(--surface-raised)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+                {activePlaylist?.cover_url || activePlaylistSummary.cover_url ? (
+                  <img
+                    src={activePlaylist?.cover_url || activePlaylistSummary.cover_url || ''}
+                    alt={activePlaylist?.name || activePlaylistSummary.name}
+                    style={{ width: 56, height: 56, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                  />
+                ) : (
+                  <div style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 8,
+                    background: 'var(--surface)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 24,
+                    flexShrink: 0
+                  }}>
+                    📑
+                  </div>
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 17, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {activePlaylist?.name || activePlaylistSummary.name}
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 3 }}>
+                    By {activePlaylist?.owner || activePlaylistSummary.owner} • {activePlaylist?.total_tracks ?? activePlaylistSummary.total_tracks} total songs
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closePlaylistModal}
+                disabled={addingBatch}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: 20,
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  padding: 4,
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Action Controls Bar */}
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '12px 20px',
+              background: 'var(--surface)',
+              borderBottom: '1px solid var(--border)',
+              gap: 12,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={
+                      Boolean(
+                        activePlaylist &&
+                        activePlaylist.tracks.length > 0 &&
+                        selectedTrackUris.size > 0 &&
+                        (user?.role !== 'admin'
+                          ? selectedTrackUris.size === Math.min(50, activePlaylist.tracks.filter(t => !skipExisting || !activeQueueUris.has(t.uri)).length)
+                          : selectedTrackUris.size === activePlaylist.tracks.filter(t => !skipExisting || !activeQueueUris.has(t.uri)).length)
+                      )
+                    }
+                    onChange={(e) => handleSelectAllToggle(e.target.checked)}
+                    disabled={loadingPlaylist || addingBatch}
+                    style={{ accentColor: 'var(--accent)', width: 16, height: 16 }}
+                  />
+                  Select All
+                </label>
+
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  <strong>{selectedTrackUris.size}</strong> of {activePlaylist ? activePlaylist.tracks.length : 0} selected
+                </span>
+
+                {user?.role !== 'admin' && (
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '2px 8px',
+                    borderRadius: 6,
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    color: '#f59e0b',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                  }}>
+                    Max 50 for members
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
+                  <input
+                    type="checkbox"
+                    checked={skipExisting}
+                    onChange={(e) => {
+                      const willSkip = e.target.checked;
+                      setSkipExisting(willSkip);
+                      if (willSkip && activePlaylist) {
+                        setSelectedTrackUris(prev => {
+                          const next = new Set(prev);
+                          activePlaylist.tracks.forEach(t => {
+                            if (activeQueueUris.has(t.uri)) next.delete(t.uri);
+                          });
+                          return next;
+                        });
+                      }
+                    }}
+                    disabled={loadingPlaylist || addingBatch}
+                    style={{ accentColor: 'var(--accent)' }}
+                  />
+                  Skip already queued
+                </label>
+
+                {selectedTrackUris.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTrackUris(new Set())}
+                    disabled={addingBatch}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--accent)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      padding: 0
+                    }}
+                  >
+                    Clear selection
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Scrollable Tracklist */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 20px', minHeight: 250, maxHeight: 420 }}>
+              {loadingPlaylist ? (
+                <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <Loader />
+                  <div style={{ marginTop: 12, fontSize: 14 }}>Loading playlist tracks…</div>
+                </div>
+              ) : activePlaylist && activePlaylist.tracks.length > 0 ? (
+                <div>
+                  {activePlaylist.tracks.map((t, idx) => {
+                    const isQueued = activeQueueUris.has(t.uri);
+                    const isSelected = selectedTrackUris.has(t.uri);
+                    const isAdded = addedSongs.has(t.uri);
+
+                    return (
+                      <div
+                        key={`${t.uri}-${idx}`}
+                        onClick={() => {
+                          if (addingBatch) return;
+                          toggleTrackSelection(t.uri);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          cursor: 'pointer',
+                          background: isSelected ? 'rgba(124, 92, 255, 0.08)' : 'transparent',
+                          transition: 'background 0.1s',
+                          borderBottom: idx < activePlaylist.tracks.length - 1 ? '1px solid var(--border)' : 'none',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              toggleTrackSelection(t.uri);
+                            }}
+                            disabled={addingBatch}
+                            style={{ accentColor: 'var(--accent)', width: 16, height: 16, cursor: 'pointer' }}
+                          />
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 22, textAlign: 'right' }}>
+                            {idx + 1}
+                          </span>
+                          {t.album_art_url && (
+                            <img
+                              src={t.album_art_url}
+                              alt={t.name}
+                              style={{ width: 36, height: 36, borderRadius: 4, objectFit: 'cover' }}
+                            />
+                          )}
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.name}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.artist}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+                          {isQueued && (
+                            <span style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              background: 'rgba(255,255,255,0.08)',
+                              color: 'var(--text-muted)',
+                            }}>
+                              In Queue
+                            </span>
+                          )}
+                          {isAdded && (
+                            <span style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              background: 'rgba(74, 222, 128, 0.15)',
+                              color: 'var(--success)',
+                            }}>
+                              ✓ Added
+                            </span>
+                          )}
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {formatDuration(t.duration_ms)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Pagination: Load More Tracks */}
+                  {activePlaylist.has_more && (
+                    <div style={{ textAlign: 'center', padding: '16px 0 8px' }}>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={loadMoreTracks}
+                        disabled={loadingMoreTracks || addingBatch}
+                        style={{ fontSize: 13, padding: '8px 20px', borderRadius: 8 }}
+                      >
+                        {loadingMoreTracks
+                          ? 'Loading more tracks…'
+                          : `Load More Tracks (${activePlaylist.tracks.length} of ${activePlaylist.total_tracks})`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                  No tracks found in this playlist.
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '14px 20px',
+              borderTop: '1px solid var(--border)',
+              background: 'var(--surface-raised)',
+            }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                {selectedTrackUris.size > 0 ? (
+                  <span>
+                    <strong>{selectedTrackUris.size}</strong> song{selectedTrackUris.size === 1 ? '' : 's'} selected
+                    {totalSelectedMinutes > 0 && ` • ~${totalSelectedMinutes} min total`}
+                  </span>
+                ) : (
+                  <span>Select songs to add to the queue</span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={closePlaylistModal}
+                  disabled={addingBatch}
+                  style={{ padding: '8px 16px', fontSize: 13 }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleBatchAdd}
+                  disabled={selectedTrackUris.size === 0 || addingBatch}
+                  style={{ padding: '8px 20px', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  {addingBatch ? (
+                    <>
+                      <span>Adding to Queue…</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Add {selectedTrackUris.size} Song{selectedTrackUris.size === 1 ? '' : 's'} to Queue</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div style={{
